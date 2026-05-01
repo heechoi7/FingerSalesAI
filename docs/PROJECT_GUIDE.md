@@ -330,6 +330,36 @@ FSAI_EXTRA_ENV_PATH=
   - 물리 삭제가 아니라 `contacts.deleted_at = NOW(6)` 처리
   - `tenant_id`와 `owner_user_id`가 모두 맞아야 삭제 가능
 
+### 2.6 전 테이블 CRUD 감사 로그와 soft delete 원칙
+
+기본 원칙:
+
+- 모든 업무 테이블은 `deleted_at` 컬럼을 갖습니다.
+- 앱 시작 시 `database.init_db()`가 현재 DB 스키마의 기본 테이블을 확인하고, `deleted_at`이 없는 테이블에는 `deleted_at DATETIME(6) NULL COMMENT '소프트 삭제 일시'`를 자동 추가합니다.
+- 기능 구현 시 삭제는 `DELETE FROM`을 사용하지 않습니다.
+- 삭제는 `deleted_at = NOW(6)` 또는 업무 상태 컬럼 변경으로 처리합니다.
+- 모든 create/update/delete 작업은 `audit_logs`에 기록합니다.
+
+감사 로그 필수 항목:
+
+- `tenant_id`
+- `actor_user_id`
+- `action`
+- `entity_type`: 실제 테이블명 또는 테이블에 대응되는 업무 엔티티
+- `entity_id`
+- `before_json`
+- `after_json`
+- `ip_address`
+- `user_agent`
+
+구현 규칙:
+
+- 같은 트랜잭션 안에서 변경 전/후 데이터를 확보할 수 있으면 `write_audit_log()`를 사용합니다.
+- 조회성 이벤트나 별도 트랜잭션으로 기록해도 되는 작업은 `record_audit_event()`를 사용합니다.
+- 감사 로그 작성 실패가 업무 흐름을 중단하면 안 되는 조회/비핵심 이벤트는 `record_audit_event()`처럼 예외를 흡수합니다.
+- 고객 생성/수정/삭제는 업무 단위 `customer` 로그와 함께 `accounts`, `contacts` 테이블 단위 로그도 남깁니다.
+- 신규 테이블을 추가하면 `deleted_at`, `tenant_id`, 생성/수정 일시, 감사 로그 기록 방식을 함께 설계합니다.
+
 ## 3. 메뉴 구성
 
 ### 3.1 상단 메뉴

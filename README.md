@@ -110,6 +110,10 @@ SOCIAL_FETCH_TIMEOUT_SECONDS=3
 - `MAX_UPLOAD_BYTES`는 이미지 업로드 최대 크기입니다. 기본값은 5MB입니다.
 - `MAX_SNS_LINKS_PER_REQUEST`는 SNS 링크 처리 요청 1회당 최대 링크 수입니다. 기본값은 3개입니다.
 - `SOCIAL_FETCH_TIMEOUT_SECONDS`는 SNS 공개 메타데이터 후보 URL 1개당 fetch timeout입니다. 기본값은 3초입니다.
+- 모든 업무 테이블은 soft delete를 기본 정책으로 사용합니다. 앱 시작 시 `init_db()`가 현재 스키마의 기본 테이블 중 `deleted_at` 컬럼이 없는 테이블에 `deleted_at DATETIME(6) NULL`을 보강합니다.
+- 삭제 API나 삭제성 기능은 `DELETE FROM`을 사용하지 않고 `deleted_at = NOW(6)` 또는 상태 컬럼 변경으로 처리해야 합니다.
+- 모든 DB CRUD는 `audit_logs`에 `action`, `entity_type`, `entity_id`, `before_json`, `after_json`, IP, user-agent를 남기는 것을 기본 정책으로 합니다.
+- 고객 저장/수정/삭제는 업무 단위 로그와 별도로 `accounts`, `contacts` 테이블 단위 create/update/delete 감사 로그도 남깁니다.
 
 ## 실행 방법
 
@@ -399,6 +403,31 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: DB CRUD 감사 로그와 soft delete 정책 강화
+
+변경 파일:
+- `database.py`
+- `main.py`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 앱 시작 시 모든 기본 테이블에 `deleted_at` 컬럼이 있는지 확인하고, 누락된 테이블에는 `deleted_at DATETIME(6) NULL COMMENT '소프트 삭제 일시'`를 자동 추가하도록 했습니다.
+- 현재 로컬 MySQL 스키마에 `init_db()`를 실행해 `ai_outputs`, `ai_tasks`, `audit_logs`, `meeting_participants`, `refresh_tokens`, `tenant_settings` 등 누락 테이블의 `deleted_at` 컬럼을 보강했습니다.
+- 고객 생성/수정 로직에서 `accounts`, `contacts` 테이블 단위 create/update 감사 로그를 남기도록 했습니다.
+- 고객 삭제 로직에서 `contacts` soft delete와 동시에 테이블 단위 delete 감사 로그를 남기도록 했습니다.
+- 회원가입 시 신규 `tenants`, `users` 생성도 `audit_logs`에 기록하도록 했습니다.
+- 회귀 테스트에 `DELETE FROM` 하드 삭제 SQL 금지 검사를 추가했습니다.
+
+검증:
+- `node --check script.js` 통과
+- `node --check admin.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py tests/test_security_regressions.py` 통과
+- `uv run python -m unittest discover -s tests` 통과
+- `uv run python -c "from database import init_db; init_db(); print('db init ok')"` 통과
+- INFORMATION_SCHEMA 기준 `deleted_at` 누락 테이블 0건 확인
 
 ### 2026-05-01: 영업활동 일정 관리 명령 확장
 

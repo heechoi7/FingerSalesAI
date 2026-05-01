@@ -1,6 +1,8 @@
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+import database
 import main
 
 
@@ -136,6 +138,15 @@ class SecurityRegressionTests(unittest.TestCase):
     def test_record_audit_event_does_not_break_user_flow(self):
         with patch("main.db_connection", side_effect=RuntimeError("audit unavailable")), patch("builtins.print"):
             main.record_audit_event({"tenant_id": 1, "user_id": 2}, "view", "customer")
+
+    def test_identifier_quote_escapes_backticks(self):
+        self.assertEqual(database.quote_identifier("a`b"), "`a``b`")
+
+    def test_application_code_does_not_use_hard_delete_sql(self):
+        workspace = Path(__file__).resolve().parents[1]
+        source = "\n".join((workspace / name).read_text(encoding="utf-8") for name in ("main.py", "database.py"))
+
+        self.assertNotIn("DELETE FROM", source.upper())
 
     def test_custom_code_tokens_are_normalized(self):
         payload = main.AdminCodesPayload(

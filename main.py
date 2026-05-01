@@ -1398,6 +1398,8 @@ def save_social_profile_screenshot_customer(
     source_file: str,
     tenant_id: int,
     owner_user_id: int,
+    audit_session: dict[str, Any] | None = None,
+    request: Request | None = None,
 ) -> dict[str, Any] | None:
     display_name = str(info.get("display_name") or "").strip()
     if not display_name:
@@ -1429,6 +1431,8 @@ def save_social_profile_screenshot_customer(
         f"SNS 프로필 캡처 · {source_file}",
         tenant_id,
         owner_user_id,
+        audit_session,
+        request,
     )
 
 
@@ -1526,7 +1530,43 @@ def fetch_contact(cursor, contact_id: int, tenant_id: int, owner_user_id: int | 
     return cursor.fetchone()
 
 
-def upsert_account(cursor, payload: CustomerPayload, tenant_id: int) -> int | None:
+def fetch_account_audit_row(cursor, account_id: int, tenant_id: int, owner_user_id: int | None) -> dict[str, Any] | None:
+    cursor.execute(
+        """
+        SELECT id, tenant_id, owner_user_id, name, account_type, industry, business_no, website, phone, address, status, created_at, updated_at, deleted_at
+        FROM accounts
+        WHERE id = %s
+          AND tenant_id = %s
+          AND owner_user_id = %s
+        LIMIT 1
+        """,
+        (account_id, tenant_id, owner_user_id),
+    )
+    return cursor.fetchone()
+
+
+def fetch_contact_audit_row(cursor, contact_id: int, tenant_id: int, owner_user_id: int | None) -> dict[str, Any] | None:
+    cursor.execute(
+        """
+        SELECT id, tenant_id, account_id, owner_user_id, name, title, department, email, phone, mobile, is_primary, created_at, updated_at, deleted_at
+        FROM contacts
+        WHERE id = %s
+          AND tenant_id = %s
+          AND owner_user_id = %s
+        LIMIT 1
+        """,
+        (contact_id, tenant_id, owner_user_id),
+    )
+    return cursor.fetchone()
+
+
+def upsert_account(
+    cursor,
+    payload: CustomerPayload,
+    tenant_id: int,
+    audit_session: dict[str, Any] | None = None,
+    request: Request | None = None,
+) -> int | None:
     company_name = payload.company_name.strip()
     if not company_name:
         return None
@@ -1545,6 +1585,7 @@ def upsert_account(cursor, payload: CustomerPayload, tenant_id: int) -> int | No
         (tenant_id, payload.owner_user_id, company_name),
     )
     account = cursor.fetchone()
+    before = fetch_account_audit_row(cursor, account["id"], tenant_id, payload.owner_user_id) if account else None
     account_values = (
         none_if_blank(payload.homepage),
         none_if_blank(payload.phone),
@@ -1570,6 +1611,9 @@ def upsert_account(cursor, payload: CustomerPayload, tenant_id: int) -> int | No
             """,
             (*account_values, account["id"], tenant_id, payload.owner_user_id),
         )
+        if audit_session:
+            after = fetch_account_audit_row(cursor, account["id"], tenant_id, payload.owner_user_id)
+            write_audit_log(cursor, audit_session, "update", "accounts", account["id"], before, after, request)
         return account["id"]
 
     cursor.execute(
@@ -1591,14 +1635,22 @@ def upsert_account(cursor, payload: CustomerPayload, tenant_id: int) -> int | No
             none_if_blank(payload.address),
         ),
     )
-    return cursor.lastrowid
+    account_id = cursor.lastrowid
+    if audit_session:
+        after = fetch_account_audit_row(cursor, account_id, tenant_id, payload.owner_user_id)
+        write_audit_log(cursor, audit_session, "create", "accounts", account_id, None, after, request)
+    return account_id
 
 
-def insert_customer(payload: CustomerPayload) -> dict[str, Any]:
+def insert_customer(
+    payload: CustomerPayload,
+    audit_session: dict[str, Any] | None = None,
+    request: Request | None = None,
+) -> dict[str, Any]:
     tenant_id = resolve_tenant_id(payload.tenant_id)
     with db_connection() as connection:
         cursor = connection.cursor(dictionary=True)
-        account_id = upsert_account(cursor, payload, tenant_id)
+        account_id = upsert_account(cursor, payload, tenant_id, audit_session, request)
         cursor.execute(
             """
             INSERT INTO contacts (
@@ -1620,11 +1672,20 @@ def insert_customer(payload: CustomerPayload) -> dict[str, Any]:
                 1 if payload.is_primary else 0,
             ),
         )
-        row = fetch_contact(cursor, cursor.lastrowid, tenant_id, payload.owner_user_id)
+        contact_id = cursor.lastrowid
+        if audit_session:
+            after = fetch_contact_audit_row(cursor, contact_id, tenant_id, payload.owner_user_id)
+            write_audit_log(cursor, audit_session, "create", "contacts", contact_id, None, after, request)
+        row = fetch_contact(cursor, contact_id, tenant_id, payload.owner_user_id)
         return contact_row_to_customer(row)
 
 
-def update_customer_record(customer_id: int, payload: CustomerPayload) -> dict[str, Any]:
+def update_customer_record(
+    customer_id: int,
+    payload: CustomerPayload,
+    audit_session: dict[str, Any] | None = None,
+    request: Request | None = None,
+) -> dict[str, Any]:
     tenant_id = resolve_tenant_id(payload.tenant_id)
     with db_connection() as connection:
         cursor = connection.cursor(dictionary=True)
@@ -1632,7 +1693,8 @@ def update_customer_record(customer_id: int, payload: CustomerPayload) -> dict[s
         if not current:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        account_id = upsert_account(cursor, payload, tenant_id)
+        before = fetch_contact_audit_row(cursor, customer_id, tenant_id, payload.owner_user_id)
+        account_id = upsert_account(cursor, payload, tenant_id, audit_session, request)
         cursor.execute(
             """
             UPDATE contacts
@@ -1665,6 +1727,9 @@ def update_customer_record(customer_id: int, payload: CustomerPayload) -> dict[s
                 payload.owner_user_id,
             ),
         )
+        if audit_session:
+            after = fetch_contact_audit_row(cursor, customer_id, tenant_id, payload.owner_user_id)
+            write_audit_log(cursor, audit_session, "update", "contacts", customer_id, before, after, request)
         row = fetch_contact(cursor, customer_id, tenant_id, payload.owner_user_id)
         return contact_row_to_customer(row)
 
@@ -1675,6 +1740,8 @@ def save_extracted_customer(
     source_file: str,
     tenant_id: int | None = None,
     owner_user_id: int | None = None,
+    audit_session: dict[str, Any] | None = None,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_card_data(data)
     payload = CustomerPayload(
@@ -1684,7 +1751,7 @@ def save_extracted_customer(
         briefing=briefing or "",
         source_file=source_file or "",
     )
-    return insert_customer(payload)
+    return insert_customer(payload, audit_session, request)
 
 
 SALES_ACTIVITY_INTENT_RE = re.compile(r"(일정|영업활동|활동|미팅|회의|방문|전화|통화|콜|메일|데모|시연)")
@@ -2468,6 +2535,7 @@ async def register(payload: RegisterRequest, request: Request):
         if tenant and tenant["status"] not in ("active", "trial"):
             raise HTTPException(status_code=409, detail="사용할 수 없는 테넌트입니다.")
 
+        created_tenant = False
         if not tenant:
             role = "owner"
             cursor.execute(
@@ -2483,6 +2551,7 @@ async def register(payload: RegisterRequest, request: Request):
                 "name": tenant_name,
                 "status": "active",
             }
+            created_tenant = True
         else:
             if not ALLOW_EXISTING_TENANT_SELF_JOIN:
                 raise HTTPException(status_code=403, detail="기존 테넌트 가입은 관리자 초대가 필요합니다.")
@@ -2512,6 +2581,16 @@ async def register(payload: RegisterRequest, request: Request):
             """,
             (tenant["id"], email, hash_password(password), name, role),
         )
+        user_id = cursor.lastrowid
+        audit_session = {"tenant_id": tenant["id"], "user_id": user_id}
+        if created_tenant:
+            write_audit_log(cursor, audit_session, "create", "tenants", tenant["id"], None, tenant, request)
+        cursor.execute(
+            "SELECT id, tenant_id, team_id, email, name, phone, role, status, last_login_at, created_at, updated_at, deleted_at FROM users WHERE id = %s",
+            (user_id,),
+        )
+        created_user = cursor.fetchone()
+        write_audit_log(cursor, audit_session, "create", "users", user_id, None, created_user, request)
         return {
             "success": True,
             "message": "회원가입이 완료되었습니다. 로그인해 주세요.",
@@ -2567,8 +2646,7 @@ async def admin_summary(request: Request):
             ("pipeline_stages", "pipeline_stages"),
             ("audit_logs", "audit_logs"),
         ):
-            deleted_filter = "" if table == "audit_logs" else "AND deleted_at IS NULL"
-            cursor.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE tenant_id = %s {deleted_filter}", (tenant_id,))
+            cursor.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE tenant_id = %s AND deleted_at IS NULL", (tenant_id,))
             counts[key] = cursor.fetchone()["count"]
         _setting_id, codes = fetch_custom_codes(cursor, tenant_id)
         counts["code_groups"] = len(codes["groups"])
@@ -3253,6 +3331,7 @@ async def admin_logs(
                    ON u.id = l.actor_user_id
                   AND u.tenant_id = l.tenant_id
             WHERE l.tenant_id = %s
+              AND l.deleted_at IS NULL
             ORDER BY l.created_at DESC, l.id DESC
             LIMIT %s
             """,
@@ -3299,6 +3378,8 @@ async def extract_business_card(
                     file.filename or "",
                     session["tenant_id"],
                     session["user_id"],
+                    session,
+                    request,
                 )
                 record_audit_event(
                     session,
@@ -3343,6 +3424,8 @@ async def extract_business_card(
                 file.filename or "",
                 session["tenant_id"],
                 session["user_id"],
+                session,
+                request,
             )
             if result.get("is_business_card", False)
             else None
@@ -3831,7 +3914,7 @@ async def create_customer(payload: CustomerPayload, request: Request):
     session = require_session(request)
     payload.tenant_id = session["tenant_id"]
     payload.owner_user_id = session["user_id"]
-    customer = insert_customer(payload)
+    customer = insert_customer(payload, session, request)
     record_audit_event(session, "create", "customer", customer.get("id"), None, customer, request)
     return {"success": True, "customer": customer}
 
@@ -3841,7 +3924,7 @@ async def update_customer(customer_id: int, payload: CustomerPayload, request: R
     session = require_session(request)
     payload.tenant_id = session["tenant_id"]
     payload.owner_user_id = session["user_id"]
-    customer = update_customer_record(customer_id, payload)
+    customer = update_customer_record(customer_id, payload, session, request)
     record_audit_event(session, "update", "customer", customer_id, None, customer, request)
     return {"success": True, "customer": customer}
 
@@ -3852,7 +3935,8 @@ async def delete_customer(customer_id: int, request: Request):
     current_tenant_id = session["tenant_id"]
     current_user_id = session["user_id"]
     with db_connection() as connection:
-        cursor = connection.cursor()
+        cursor = connection.cursor(dictionary=True)
+        before = fetch_contact_audit_row(cursor, customer_id, current_tenant_id, current_user_id)
         cursor.execute(
             """
             UPDATE contacts
@@ -3866,6 +3950,7 @@ async def delete_customer(customer_id: int, request: Request):
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Customer not found")
+        write_audit_log(cursor, session, "delete", "contacts", customer_id, before, None, request)
     record_audit_event(session, "delete", "customer", customer_id, None, {"customer_id": customer_id}, request)
     return {"success": True}
 

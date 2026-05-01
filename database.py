@@ -26,6 +26,7 @@ DEFAULT_TENANT_ID = int(os.getenv("MYSQL_TENANT_ID", "1"))
 DB_POOL_SIZE = int(os.getenv("MYSQL_POOL_SIZE", "10"))
 DB_POOL_NAME = os.getenv("MYSQL_POOL_NAME", "fingersalesai_pool")
 _connection_pool: pooling.MySQLConnectionPool | None = None
+SOFT_DELETE_COLUMN = "deleted_at"
 
 
 def get_connection_pool() -> pooling.MySQLConnectionPool:
@@ -53,6 +54,33 @@ def db_connection() -> Iterator[mysql.connector.MySQLConnection]:
         connection.close()
 
 
+def quote_identifier(identifier: str) -> str:
+    return f"`{identifier.replace('`', '``')}`"
+
+
+def ensure_soft_delete_columns(cursor) -> None:
+    cursor.execute(
+        """
+        SELECT t.TABLE_NAME, MAX(c.COLUMN_NAME = %s) AS has_deleted_at
+        FROM information_schema.TABLES t
+        LEFT JOIN information_schema.COLUMNS c
+               ON c.TABLE_SCHEMA = t.TABLE_SCHEMA
+              AND c.TABLE_NAME = t.TABLE_NAME
+        WHERE t.TABLE_SCHEMA = DATABASE()
+          AND t.TABLE_TYPE = 'BASE TABLE'
+        GROUP BY t.TABLE_NAME
+        ORDER BY t.TABLE_NAME
+        """,
+        (SOFT_DELETE_COLUMN,),
+    )
+    missing = [row["TABLE_NAME"] for row in cursor.fetchall() if not row["has_deleted_at"]]
+    for table_name in missing:
+        cursor.execute(
+            f"ALTER TABLE {quote_identifier(table_name)} "
+            f"ADD COLUMN {quote_identifier(SOFT_DELETE_COLUMN)} DATETIME(6) NULL COMMENT '소프트 삭제 일시'"
+        )
+
+
 def init_db() -> None:
     with db_connection() as connection:
         cursor = connection.cursor(dictionary=True)
@@ -68,6 +96,7 @@ def init_db() -> None:
         missing = {"accounts", "contacts", "tenants", "users"} - existing
         if missing:
             raise RuntimeError(f"Missing required table(s): {', '.join(sorted(missing))}")
+        ensure_soft_delete_columns(cursor)
 
 
 def resolve_tenant_id(tenant_id: int | None = None) -> int:
