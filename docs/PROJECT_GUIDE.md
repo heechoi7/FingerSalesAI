@@ -612,6 +612,7 @@ FSAI_EXTRA_ENV_PATH=
 - 조인: `accounts`, `contacts`, `opportunities`
 - 범위: 세션의 `tenant_id`, `user_id(owner_user_id)`
 - 행 클릭 시 하단 상세 패널에 견적번호, 회사, 고객, 상태, 금액, 유효일, 발송일, 영업기회를 표시합니다.
+- 원본 문서가 연결된 경우 `uploaded_documents`의 다운로드 링크를 상세 패널에 표시합니다.
 
 ### 4.6 계약 메뉴
 
@@ -631,6 +632,34 @@ FSAI_EXTRA_ENV_PATH=
 - 조인: `accounts`, `contacts`, `quotes`, `opportunities`
 - 범위: 세션의 `tenant_id`, `user_id(owner_user_id)`
 - 행 클릭 시 하단 상세 패널에 계약번호, 회사, 고객, 상태, 금액, 시작일, 종료일, 서명일, 견적번호, 영업기회를 표시합니다.
+- 원본 문서가 연결된 경우 `uploaded_documents`의 다운로드 링크를 상세 패널에 표시합니다.
+
+### 4.6.1 문서 업로드 기반 견적/계약 저장
+
+목적:
+
+- 사용자가 Word, Excel, PDF, CSV, TXT 문서를 업로드하면 AI가 문서를 읽고 견적서/계약서 여부를 판단합니다.
+- 견적서는 `quotes`, 계약서는 `contracts`에 저장하고 원본 파일은 다운로드 가능한 링크로 관리합니다.
+
+처리 흐름:
+
+1. 사용자가 에이전트 입력창에 문서 파일을 첨부하고 전송합니다.
+2. `script.js`가 이미지가 아닌 지원 문서를 `/api/extract/document`로 전송합니다.
+3. 서버는 파일 크기 제한을 검사하고 확장자/콘텐츠 유형을 확인합니다.
+4. DOCX/XLSX는 zip XML에서 텍스트를 추출하고, PDF/레거시 Office/CSV/TXT는 가능한 텍스트를 추출합니다.
+5. Gemini 구조화 출력으로 `quote`, `contract`, `unknown`을 분류하고 금액, 고객사, 문서번호, 날짜를 추출합니다.
+6. LLM 추출이 실패하면 휴리스틱 분류로 견적/계약 여부와 금액을 보조 판단합니다.
+7. 견적/계약으로 확정되면 현재 세션의 `tenant_id`, `user_id` 범위에서 고객사와 영업기회를 생성 또는 보강합니다.
+8. 견적서는 `quotes`, 계약서는 `contracts`에 저장합니다.
+9. 원본 파일은 `uploads/documents/{tenant_id}/{user_id}`에 저장하고 `uploaded_documents`에 파일명, 저장 경로, SHA-256, 추출 텍스트, 추출 JSON을 기록합니다.
+10. 프론트는 저장 완료 응답의 `target_menu`에 따라 견적 또는 계약 메뉴를 자동으로 열고 목록을 다시 조회합니다.
+
+보안/운영 기준:
+
+- 다운로드 API는 `require_session()`을 통과한 뒤 `uploaded_documents.tenant_id`와 `owner_user_id`가 현재 세션과 일치하는 경우만 허용합니다.
+- 다운로드 시 실제 파일 경로가 `DOCUMENT_UPLOAD_DIR` 하위인지 다시 확인합니다.
+- 파일 원본은 Git에 올라가지 않도록 `uploads/`를 `.gitignore`에 포함합니다.
+- 문서 저장, 원본 파일 링크 생성, 다운로드는 `audit_logs`에 기록합니다.
 
 ### 4.7 관리자 페이지
 

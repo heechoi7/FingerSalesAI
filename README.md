@@ -329,11 +329,13 @@ http://localhost:8000/
   - 견적 테이블 `quotes` 기준 조회
   - 조회 조건: `company_name`, `contact_name`
   - 로그인 세션의 `tenant_id`, `user_id(owner_user_id)` 기준으로 제한
+  - 업로드 문서가 연결된 경우 `document_id`, `document_filename`, `document_url`을 함께 반환
 
 - `GET /api/contracts`
   - 계약 테이블 `contracts` 기준 조회
   - 조회 조건: `company_name`, `contact_name`
   - 로그인 세션의 `tenant_id`, `user_id(owner_user_id)` 기준으로 제한
+  - 업로드 문서가 연결된 경우 `document_id`, `document_filename`, `document_url`을 함께 반환
 
 명함:
 
@@ -341,6 +343,17 @@ http://localhost:8000/
   - 이미지 파일 업로드
   - 명함 정보 추출
   - accounts/contacts에 저장
+
+- `POST /api/extract/document`
+  - Word, Excel, PDF, CSV, TXT 파일 업로드
+  - 문서 내용을 추출하고 견적서/계약서 여부를 분류
+  - 견적서는 `quotes`, 계약서는 `contracts`에 저장
+  - 필수 연결 데이터인 `accounts`, `opportunities`를 현재 로그인 사용자 범위에서 생성/보강
+  - 원본 파일은 `uploads/documents`에 저장하고 `uploaded_documents`에 다운로드 링크 메타데이터를 기록
+
+- `GET /api/documents/{document_id}/download`
+  - 로그인 사용자의 `tenant_id`, `user_id` 범위에 속한 문서만 다운로드
+  - 다운로드 시 `audit_logs`에 `uploaded_document` download 기록
 
 에이전트 업무 실행:
 
@@ -408,6 +421,34 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 문서 업로드 기반 견적/계약 자동 저장
+
+변경 파일:
+- `.gitignore`
+- `.env.example`
+- `database.py`
+- `main.py`
+- `script.js`
+- `styles.css`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- Word, Excel, PDF, CSV, TXT 파일을 에이전트 입력창에 첨부하면 문서 분석 API(`/api/extract/document`)로 처리하도록 했습니다.
+- 문서 텍스트를 추출하고 견적서/계약서 여부를 분류해 견적서는 `quotes`, 계약서는 `contracts`에 저장합니다.
+- 저장에 필요한 `accounts`, `opportunities`, `pipeline_stages` 연결 데이터를 현재 로그인 사용자의 테넌트/사용자 범위 안에서 생성 또는 보강합니다.
+- 원본 파일은 `uploads/documents/{tenant_id}/{user_id}` 아래에 저장하고, `uploaded_documents` 테이블에 파일 링크 메타데이터와 추출 결과를 기록합니다.
+- 견적/계약 목록 API가 연결 문서의 `document_url`을 반환하고, 상세 패널에서 원본 파일 다운로드 링크를 표시합니다.
+- 저장 완료 후 프론트가 견적 또는 계약 메뉴를 자동으로 열어 저장된 데이터를 보여줍니다.
+
+검증:
+- `uv run python -m py_compile main.py database.py graph.py tests\test_security_regressions.py`
+- `uv run python -m unittest discover -s tests`
+- `node --check script.js`
+- `uv run python -c "from database import init_db; init_db(); print('db init ok')"`
+- FastAPI TestClient로 텍스트 견적 문서 업로드, `quotes` 저장, `uploaded_documents` 링크 생성 확인 후 테스트 데이터 soft delete
 
 ### 2026-05-01: 에이전트 명령창 줄바꿈과 고객 선확인 흐름
 

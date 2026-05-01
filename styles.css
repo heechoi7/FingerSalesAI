@@ -1192,6 +1192,30 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.uploaded-file-message {
+  display: grid;
+  gap: 4px;
+}
+
+.uploaded-file-message strong {
+  color: inherit;
+}
+
+.uploaded-file-message span {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+}
+
+.document-download-link {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.document-download-link:hover {
+  text-decoration: underline;
+}
+
 .right-section {
   min-height: 0;
   display: grid;

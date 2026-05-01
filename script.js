@@ -379,8 +379,18 @@ function showDetail(title, rows) {
   if (customerDetailTitle) customerDetailTitle.textContent = title || "상세 정보";
   if (!customerDetailList) return;
   customerDetailList.innerHTML = rows
-    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "-")}</dd></div>`)
+    .map(([label, value]) => {
+      const content = value && typeof value === "object" && value.html ? value.html : escapeHtml(value || "-");
+      return `<div><dt>${escapeHtml(label)}</dt><dd>${content}</dd></div>`;
+    })
     .join("");
+}
+
+function documentLinkValue(row) {
+  if (!row?.document_url) return "-";
+  return {
+    html: `<a class="document-download-link" href="${escapeHtml(row.document_url)}" target="_blank" rel="noopener">${escapeHtml(row.document_filename || "파일 다운로드")}</a>`,
+  };
 }
 
 function renderDataTable({ rows, columns, emptyMessage, onSelect }) {
@@ -499,6 +509,7 @@ function renderQuoteView(rows = []) {
       ["유효일", formatDateOnly(row.valid_until)],
       ["발송일", formatDateTime(row.sent_at)],
       ["영업기회", row.opportunity_name],
+      ["원본 파일", documentLinkValue(row)],
     ],
   }));
 }
@@ -549,6 +560,7 @@ function renderContractView(rows = []) {
       ["서명일", formatDateTime(row.signed_at)],
       ["견적번호", row.quote_no],
       ["영업기회", row.opportunity_name],
+      ["원본 파일", documentLinkValue(row)],
     ],
   }));
 }
@@ -1183,6 +1195,61 @@ function buildUploadedImageHtml(file, imageUrl) {
   `;
 }
 
+function buildUploadedFileHtml(file) {
+  return `
+    <div class="uploaded-file-message">
+      <strong>${escapeHtml(file.name)}</strong>
+      <span>${formatFileSize(file.size)}</span>
+    </div>
+  `;
+}
+
+function isDocumentFile(file) {
+  const name = (file.name || "").toLowerCase();
+  return /\.(pdf|doc|docx|xls|xlsx|csv|txt)$/.test(name);
+}
+
+async function analyzeSalesDocument(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  appendMessage("user", buildUploadedFileHtml(file), { html: true });
+  const loadingMessage = appendMessage("ai", "문서 내용을 분석해 견적/계약 여부를 확인하고 있습니다.");
+  questionSequence += 1;
+  addLogDivider(`문서 ${questionSequence}`);
+  addLog("Document Agent", `${file.name} 파일을 문서 분석 파이프라인으로 전달했습니다.`);
+
+  try {
+    const response = await apiFetch("/api/extract/document", {
+      method: "POST",
+      body: formData,
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(apiErrorMessage(result, "문서 분석 중 오류가 발생했습니다."));
+    }
+
+    loadingMessage.remove();
+    appendMessage("ai", result.reply || "문서 분석을 완료했습니다.");
+    if (!result.saved) {
+      addLog("Document Agent", "견적/계약 문서로 확정하지 못해 저장하지 않았습니다.", "skipped");
+      return;
+    }
+
+    addLog("Document Agent", "문서 분석 결과를 DB에 저장하고 원본 파일 다운로드 링크를 연결했습니다.", "done");
+    if (result.target_menu === "quotes") {
+      activateMainMenu("quotes");
+      await loadMenu("quotes");
+    } else if (result.target_menu === "contracts") {
+      activateMainMenu("contracts");
+      await loadMenu("contracts");
+    }
+  } catch (error) {
+    loadingMessage.remove();
+    appendMessage("ai", `문서 분석을 완료하지 못했습니다. ${error.message}`);
+    addLog("Document Agent", error.message, "error");
+  }
+}
+
 function buildCardInfoHtml(data) {
   const preferredLabels = ["회사명", "이름", "직무", "직위", "휴대전화", "이메일", "홈페이지"];
   const rows = preferredLabels.filter((label) => Object.prototype.hasOwnProperty.call(data, label)).map((label) => [label, data[label]]);
@@ -1363,9 +1430,13 @@ async function processPendingFiles() {
 
   for (const file of files) {
     if (!file.type.startsWith("image/")) {
-      appendMessage("user", `${file.name} 파일을 첨부했습니다.`);
-      appendMessage("ai", "현재 자동 명함 인식은 이미지 파일에서만 실행됩니다.");
-      addLog("File Agent", `${file.name} 파일은 이미지가 아니므로 명함 인식 워크플로우에서 제외했습니다.`, "done");
+      if (isDocumentFile(file)) {
+        await analyzeSalesDocument(file);
+      } else {
+        appendMessage("user", `${file.name} 파일을 첨부했습니다.`);
+        appendMessage("ai", "지원하지 않는 파일 형식입니다. 이미지, PDF, DOCX, XLSX, CSV, TXT 파일을 첨부해 주세요.");
+        addLog("File Agent", `${file.name} 파일은 지원하지 않는 형식입니다.`, "done");
+      }
       continue;
     }
 

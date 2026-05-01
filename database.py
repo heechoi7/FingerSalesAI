@@ -81,6 +81,35 @@ def ensure_soft_delete_columns(cursor) -> None:
         )
 
 
+def ensure_uploaded_documents_table(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uploaded_documents (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '업로드 문서 ID',
+            tenant_id BIGINT UNSIGNED NOT NULL COMMENT '테넌트 ID',
+            owner_user_id BIGINT UNSIGNED NULL COMMENT '소유 사용자 ID',
+            entity_type VARCHAR(40) NOT NULL COMMENT '연결 업무 유형',
+            entity_id BIGINT UNSIGNED NOT NULL COMMENT '연결 업무 ID',
+            original_filename VARCHAR(255) NOT NULL COMMENT '원본 파일명',
+            stored_filename VARCHAR(255) NOT NULL COMMENT '저장 파일명',
+            storage_path VARCHAR(700) NOT NULL COMMENT '서버 저장 경로',
+            content_type VARCHAR(120) NULL COMMENT '콘텐츠 유형',
+            size_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '파일 크기',
+            sha256 VARCHAR(64) NOT NULL COMMENT '파일 SHA-256',
+            extracted_text LONGTEXT NULL COMMENT '추출 텍스트',
+            extracted_json JSON NULL COMMENT '문서 분석 결과',
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '생성 일시',
+            updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '수정 일시',
+            deleted_at DATETIME(6) NULL COMMENT '소프트 삭제 일시',
+            PRIMARY KEY (id),
+            KEY idx_uploaded_documents_tenant_owner (tenant_id, owner_user_id),
+            KEY idx_uploaded_documents_entity (tenant_id, entity_type, entity_id),
+            KEY idx_uploaded_documents_sha (tenant_id, sha256)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='업로드 문서 파일'
+        """
+    )
+
+
 def init_db() -> None:
     with db_connection() as connection:
         cursor = connection.cursor(dictionary=True)
@@ -96,6 +125,7 @@ def init_db() -> None:
         missing = {"accounts", "contacts", "tenants", "users"} - existing
         if missing:
             raise RuntimeError(f"Missing required table(s): {', '.join(sorted(missing))}")
+        ensure_uploaded_documents_table(cursor)
         ensure_soft_delete_columns(cursor)
 
 

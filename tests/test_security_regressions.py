@@ -1,4 +1,6 @@
 import unittest
+import io
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -293,6 +295,45 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(candidates, [])
         self.assertEqual(resolved["contact_id"], 1)
         self.assertEqual(context["selectedCustomer"]["contactId"], 1)
+
+    def test_docx_text_extraction_reads_document_xml(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "word/document.xml",
+                "<w:document xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main'>"
+                "<w:body><w:p><w:r><w:t>Quote for Acme Korea</w:t></w:r></w:p></w:body></w:document>",
+            )
+
+        text = main.extract_docx_text(buffer.getvalue())
+
+        self.assertIn("Quote for Acme Korea", text)
+
+    def test_xlsx_text_extraction_reads_shared_strings(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "xl/sharedStrings.xml",
+                "<sst xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'>"
+                "<si><t>Contract Amount</t></si><si><t>1000000</t></si></sst>",
+            )
+            archive.writestr(
+                "xl/worksheets/sheet1.xml",
+                "<worksheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'>"
+                "<sheetData><row><c t='s'><v>0</v></c><c t='s'><v>1</v></c></row></sheetData></worksheet>",
+            )
+
+        text = main.extract_xlsx_text(buffer.getvalue())
+
+        self.assertIn("Contract Amount", text)
+        self.assertIn("1000000", text)
+
+    def test_sales_document_heuristic_classifies_quote(self):
+        info = main.heuristic_sales_document_info("견적서\n고객사: Acme Korea\n합계 1,200,000원", "quote.txt")
+
+        self.assertEqual(info.document_type, "quote")
+        self.assertEqual(info.company_name, "Acme Korea")
+        self.assertEqual(info.total_amount, 1200000.0)
 
 
 if __name__ == "__main__":

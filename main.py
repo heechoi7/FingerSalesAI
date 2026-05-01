@@ -5,6 +5,7 @@ from decimal import Decimal
 import hashlib
 import hmac
 import html as html_lib
+import io
 import os
 import json
 import re
@@ -13,6 +14,8 @@ import time
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
+from xml.etree import ElementTree as ET
+import zipfile
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -59,6 +62,8 @@ MAX_SNS_LINKS_PER_REQUEST = int(os.getenv("MAX_SNS_LINKS_PER_REQUEST", "3"))
 SOCIAL_FETCH_TIMEOUT_SECONDS = float(os.getenv("SOCIAL_FETCH_TIMEOUT_SECONDS", "3"))
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Seoul")
 MAX_RECURRING_ACTIVITY_COUNT = int(os.getenv("MAX_RECURRING_ACTIVITY_COUNT", "24"))
+DOCUMENT_UPLOAD_DIR = Path(os.getenv("DOCUMENT_UPLOAD_DIR", str(BASE_DIR / "uploads" / "documents")))
+MAX_DOCUMENT_TEXT_CHARS = int(os.getenv("MAX_DOCUMENT_TEXT_CHARS", "60000"))
 _auth_attempts: dict[str, list[float]] = {}
 ADMIN_ROLES = {"owner", "admin"}
 USER_STATUS_VALUES = {"active", "invited", "locked", "disabled"}
@@ -150,6 +155,28 @@ class SocialProfileScreenshotInfo(BaseModel):
     company_name: str = Field(default="", description="Visible current company or organization. Empty if not visible.")
     profile_url: str = Field(default="", description="Visible profile URL if shown in the screenshot. Empty if not visible.")
     summary: str = Field(default="", description="Short Korean summary of only visible profile facts.")
+
+
+class SalesDocumentInfo(BaseModel):
+    document_type: str = Field(
+        default="unknown",
+        description="One of quote, contract, unknown. quote means quotation/estimate/proposal price document. contract means signed/agreement contract document.",
+    )
+    document_no: str = Field(default="", description="Quote number or contract number. Empty if missing.")
+    title: str = Field(default="", description="Short title of the quote or contract.")
+    company_name: str = Field(default="", description="Customer company name.")
+    contact_name: str = Field(default="", description="Customer contact person name. Empty if missing.")
+    currency: str = Field(default="KRW", description="ISO currency code such as KRW or USD.")
+    subtotal_amount: float = Field(default=0, description="Subtotal amount for quote. 0 if missing.")
+    discount_amount: float = Field(default=0, description="Discount amount for quote. 0 if missing.")
+    tax_amount: float = Field(default=0, description="Tax/VAT amount. 0 if missing.")
+    total_amount: float = Field(default=0, description="Total quote or contract amount. 0 if missing.")
+    valid_until: str = Field(default="", description="Quote valid until date in YYYY-MM-DD. Empty if missing.")
+    sent_at: str = Field(default="", description="Quote sent date/datetime in ISO format. Empty if missing.")
+    start_date: str = Field(default="", description="Contract start date in YYYY-MM-DD. Empty if missing.")
+    end_date: str = Field(default="", description="Contract end date in YYYY-MM-DD. Empty if missing.")
+    signed_at: str = Field(default="", description="Contract signed date/datetime in ISO format. Empty if missing.")
+    summary: str = Field(default="", description="Short Korean summary of extracted evidence.")
 
 
 class LoginRequest(BaseModel):
@@ -685,6 +712,564 @@ async def read_upload_limited(file: UploadFile, max_bytes: int) -> bytes:
     if len(contents) > max_bytes:
         raise HTTPException(status_code=413, detail=f"업로드 파일은 {max_bytes // (1024 * 1024)}MB 이하만 허용됩니다.")
     return contents
+
+
+DOCUMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".txt"}
+DOCUMENT_CONTENT_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain",
+    "text/csv",
+    "application/csv",
+}
+
+
+def safe_original_filename(filename: str | None) -> str:
+    name = Path(filename or "uploaded-document").name.strip()
+    return re.sub(r"[\x00-\x1f<>:\"/\\|?*]+", "_", name)[:180] or "uploaded-document"
+
+
+def upload_extension(filename: str | None) -> str:
+    return Path(filename or "").suffix.lower()
+
+
+def is_supported_document_upload(file: UploadFile) -> bool:
+    extension = upload_extension(file.filename)
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    return extension in DOCUMENT_EXTENSIONS or content_type in DOCUMENT_CONTENT_TYPES
+
+
+def zip_xml_text(xml_bytes: bytes) -> str:
+    try:
+        root = ET.fromstring(xml_bytes)
+    except Exception:
+        return ""
+    parts = []
+    for node in root.iter():
+        if node.tag.rsplit("}", 1)[-1] in {"t", "instrText"} and node.text:
+            parts.append(node.text)
+        elif node.tag.rsplit("}", 1)[-1] in {"p", "tr"}:
+            parts.append("\n")
+    return " ".join(part.strip() for part in parts if part and part.strip())
+
+
+def extract_docx_text(contents: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents)) as archive:
+            chunks = []
+            for name in archive.namelist():
+                if name == "word/document.xml" or name.startswith("word/header") or name.startswith("word/footer"):
+                    chunks.append(zip_xml_text(archive.read(name)))
+            return "\n".join(chunk for chunk in chunks if chunk)
+    except Exception:
+        return ""
+
+
+def extract_xlsx_text(contents: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents)) as archive:
+            shared_strings: list[str] = []
+            if "xl/sharedStrings.xml" in archive.namelist():
+                root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+                for item in root.iter():
+                    if item.tag.rsplit("}", 1)[-1] == "si":
+                        text = " ".join(
+                            node.text.strip()
+                            for node in item.iter()
+                            if node.tag.rsplit("}", 1)[-1] == "t" and node.text
+                        )
+                        shared_strings.append(text)
+
+            rows = []
+            sheet_names = sorted(name for name in archive.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", name))
+            for sheet_name in sheet_names[:10]:
+                root = ET.fromstring(archive.read(sheet_name))
+                for row in root.iter():
+                    if row.tag.rsplit("}", 1)[-1] != "row":
+                        continue
+                    values = []
+                    for cell in row:
+                        if cell.tag.rsplit("}", 1)[-1] != "c":
+                            continue
+                        cell_type = cell.attrib.get("t")
+                        value = ""
+                        for child in cell:
+                            if child.tag.rsplit("}", 1)[-1] == "v" and child.text:
+                                value = child.text
+                                break
+                            if child.tag.rsplit("}", 1)[-1] == "is":
+                                value = " ".join(
+                                    node.text.strip()
+                                    for node in child.iter()
+                                    if node.tag.rsplit("}", 1)[-1] == "t" and node.text
+                                )
+                        if cell_type == "s" and value.isdigit():
+                            index = int(value)
+                            value = shared_strings[index] if 0 <= index < len(shared_strings) else value
+                        if value:
+                            values.append(value)
+                    if values:
+                        rows.append(" | ".join(values))
+            return "\n".join(rows)
+    except Exception:
+        return ""
+
+
+def extract_pdf_text(contents: bytes) -> str:
+    # Dependency-free fallback for simple text PDFs. Scanned PDFs are handled by Gemini media input when available.
+    raw = contents.decode("latin-1", errors="ignore")
+    literals = re.findall(r"\((.{1,500}?)\)\s*T[Jj]", raw, flags=re.DOTALL)
+    cleaned = []
+    for literal in literals:
+        text = literal.replace(r"\(", "(").replace(r"\)", ")").replace(r"\\", "\\")
+        text = re.sub(r"\\[nrtbf]", " ", text)
+        if re.search(r"[A-Za-z가-힣0-9]", text):
+            cleaned.append(text)
+    if cleaned:
+        return "\n".join(cleaned)
+    visible = re.sub(r"[^A-Za-z0-9가-힣.,:;/%()\\-+₩$\\s]", " ", raw)
+    return re.sub(r"\s+", " ", visible)[:12000]
+
+
+def extract_document_text(contents: bytes, filename: str, content_type: str | None) -> str:
+    extension = upload_extension(filename)
+    if extension == ".docx":
+        return extract_docx_text(contents)
+    if extension == ".xlsx":
+        return extract_xlsx_text(contents)
+    if extension == ".pdf":
+        return extract_pdf_text(contents)
+    if extension in {".doc", ".xls"}:
+        return re.sub(r"\s+", " ", contents.decode("latin-1", errors="ignore"))
+    if extension in {".txt", ".csv"} or (content_type or "").startswith("text/"):
+        for encoding in ("utf-8-sig", "utf-8", "cp949", "latin-1"):
+            try:
+                return contents.decode(encoding)
+            except Exception:
+                continue
+    return contents.decode("utf-8", errors="ignore")
+
+
+def normalize_currency(value: str | None) -> str:
+    text = str(value or "").upper().strip()
+    if "USD" in text or "$" in text:
+        return "USD"
+    if "EUR" in text:
+        return "EUR"
+    if "JPY" in text:
+        return "JPY"
+    return "KRW"
+
+
+def decimal_amount(value: Any) -> Decimal:
+    try:
+        if value is None:
+            return Decimal("0")
+        text = str(value).replace(",", "").replace("₩", "").replace("$", "").strip()
+        return Decimal(text or "0").quantize(Decimal("0.01"))
+    except Exception:
+        return Decimal("0.00")
+
+
+def parse_iso_date(value: str | None) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for pattern in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text[:10].replace("/", "-").replace(".", "-"), "%Y-%m-%d").date()
+        except Exception:
+            continue
+    match = re.search(r"(20\d{2})\D{1,3}(\d{1,2})\D{1,3}(\d{1,2})", text)
+    if match:
+        try:
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except Exception:
+            return None
+    return None
+
+
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    parsed_date = parse_iso_date(value)
+    return datetime.combine(parsed_date, datetime.min.time()) if parsed_date else None
+
+
+def heuristic_sales_document_info(text: str, filename: str) -> SalesDocumentInfo:
+    combined = f"{filename}\n{text[:12000]}"
+    lowered = combined.lower()
+    document_type = "unknown"
+    if re.search(r"(견적|quotation|quote|estimate|proposal)", lowered, re.IGNORECASE):
+        document_type = "quote"
+    if re.search(r"(계약|contract|agreement|협약|주문서)", lowered, re.IGNORECASE):
+        document_type = "contract"
+    amount_matches = re.findall(r"(?:₩|KRW|USD|\$)?\s*([0-9][0-9,]{3,}(?:\.\d{1,2})?)", combined, re.IGNORECASE)
+    amount = max((decimal_amount(item) for item in amount_matches), default=Decimal("0"))
+    company_match = re.search(r"(?:고객사|거래처|수신|발주처|계약상대방|회사명)\s*[:：]?\s*([^\n\r]{2,80})", combined)
+    title = Path(filename).stem[:120]
+    return SalesDocumentInfo(
+        document_type=document_type,
+        title=title,
+        company_name=(company_match.group(1).strip() if company_match else ""),
+        currency=normalize_currency(combined),
+        total_amount=float(amount),
+        summary="문서 텍스트 기반 휴리스틱으로 추출했습니다.",
+    )
+
+
+def extract_sales_document_info(contents: bytes, filename: str, content_type: str | None, extracted_text: str) -> SalesDocumentInfo:
+    prompt = f"""
+    You extract CRM data from uploaded sales documents.
+    Classify the document as:
+    - quote: quotation, estimate, proposal with price, 견적서
+    - contract: contract, agreement, signed order, 계약서
+    - unknown: not enough evidence
+
+    Extract only facts present in the document. Do not guess.
+    Dates must be YYYY-MM-DD when possible. Currency must be ISO code.
+    If a value is missing, return empty string or 0.
+
+    Filename: {filename}
+
+    Extracted text:
+    {extracted_text[:MAX_DOCUMENT_TEXT_CHARS]}
+    """
+    try:
+        model = create_gemini_model(temperature=0)
+        structured_model = model.with_structured_output(SalesDocumentInfo)
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        if upload_extension(filename) == ".pdf":
+            content.append(
+                {
+                    "type": "media",
+                    "mime_type": content_type or "application/pdf",
+                    "data": base64.b64encode(contents).decode("utf-8"),
+                }
+            )
+        response: SalesDocumentInfo = structured_model.invoke([HumanMessage(content=content)])
+        data = response.model_dump()
+        if data.get("document_type") not in {"quote", "contract", "unknown"}:
+            data["document_type"] = "unknown"
+        return SalesDocumentInfo(**data)
+    except Exception as error:
+        print("Sales document AI extraction failed:", error)
+        return heuristic_sales_document_info(extracted_text, filename)
+
+
+def ensure_pipeline_stage(cursor, tenant_id: int, stage_code: str) -> int:
+    cursor.execute(
+        """
+        SELECT id
+        FROM pipeline_stages
+        WHERE tenant_id = %s
+          AND stage_code = %s
+          AND deleted_at IS NULL
+        ORDER BY sort_order, id
+        LIMIT 1
+        """,
+        (tenant_id, stage_code),
+    )
+    row = cursor.fetchone()
+    if row:
+        return row["id"]
+    stage = next((item for item in DEFAULT_PIPELINE_STAGES if item["stage_code"] == stage_code), DEFAULT_PIPELINE_STAGES[0])
+    cursor.execute(
+        """
+        INSERT INTO pipeline_stages (
+            tenant_id, stage_code, name, description, probability_percent, sort_order, is_active
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, 1)
+        """,
+        (
+            tenant_id,
+            stage["stage_code"],
+            stage["name"],
+            stage["description"],
+            stage["probability_percent"],
+            stage["sort_order"],
+        ),
+    )
+    return cursor.lastrowid
+
+
+def ensure_document_account(cursor, session: dict[str, Any], info: SalesDocumentInfo, request: Request | None = None) -> int:
+    company_name = (info.company_name or "").strip() or "문서 미확인 고객사"
+    payload = CustomerPayload(
+        tenant_id=session["tenant_id"],
+        owner_user_id=session["user_id"],
+        company_name=company_name,
+    )
+    account_id = upsert_account(cursor, payload, session["tenant_id"], session, request)
+    if not account_id:
+        raise HTTPException(status_code=400, detail="문서에서 고객사 정보를 확인하지 못했습니다.")
+    return account_id
+
+
+def find_document_contact(cursor, session: dict[str, Any], account_id: int, contact_name: str | None) -> int | None:
+    name = (contact_name or "").strip()
+    if not name:
+        return None
+    cursor.execute(
+        """
+        SELECT id
+        FROM contacts
+        WHERE tenant_id = %s
+          AND owner_user_id = %s
+          AND account_id = %s
+          AND name = %s
+          AND deleted_at IS NULL
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """,
+        (session["tenant_id"], session["user_id"], account_id, name),
+    )
+    row = cursor.fetchone()
+    return row["id"] if row else None
+
+
+def ensure_document_opportunity(
+    cursor,
+    session: dict[str, Any],
+    info: SalesDocumentInfo,
+    account_id: int,
+    contact_id: int | None,
+    stage_code: str,
+    amount: Decimal,
+) -> int:
+    title = (info.title or info.document_no or "문서 기반 영업기회").strip()[:180]
+    stage_id = ensure_pipeline_stage(cursor, session["tenant_id"], stage_code)
+    cursor.execute(
+        """
+        SELECT id
+        FROM opportunities
+        WHERE tenant_id = %s
+          AND owner_user_id = %s
+          AND account_id = %s
+          AND name = %s
+          AND deleted_at IS NULL
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """,
+        (session["tenant_id"], session["user_id"], account_id, title),
+    )
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            """
+            UPDATE opportunities
+            SET contact_id = COALESCE(%s, contact_id),
+                pipeline_stage_id = %s,
+                amount = GREATEST(amount, %s),
+                currency = %s,
+                updated_at = NOW(6)
+            WHERE id = %s
+              AND tenant_id = %s
+            """,
+            (contact_id, stage_id, amount, normalize_currency(info.currency), row["id"], session["tenant_id"]),
+        )
+        return row["id"]
+    cursor.execute(
+        """
+        INSERT INTO opportunities (
+            tenant_id, owner_user_id, account_id, contact_id, pipeline_stage_id,
+            name, amount, currency, probability_percent, status
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'open')
+        """,
+        (
+            session["tenant_id"],
+            session["user_id"],
+            account_id,
+            contact_id,
+            stage_id,
+            title,
+            amount,
+            normalize_currency(info.currency),
+            60 if stage_code == "proposal" else 85,
+        ),
+    )
+    return cursor.lastrowid
+
+
+def generated_document_no(prefix: str) -> str:
+    return f"{prefix}-{app_now().strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(3).upper()}"
+
+
+def stored_document_path(session: dict[str, Any], original_filename: str) -> tuple[Path, str]:
+    extension = upload_extension(original_filename)
+    stored_filename = f"{session['tenant_id']}_{session['user_id']}_{app_now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(8)}{extension}"
+    target_dir = DOCUMENT_UPLOAD_DIR / str(session["tenant_id"]) / str(session["user_id"])
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / stored_filename, stored_filename
+
+
+def insert_uploaded_document(
+    cursor,
+    session: dict[str, Any],
+    entity_type: str,
+    entity_id: int,
+    original_filename: str,
+    stored_filename: str,
+    storage_path: Path,
+    content_type: str | None,
+    contents: bytes,
+    extracted_text: str,
+    extracted_info: dict[str, Any],
+) -> dict[str, Any]:
+    cursor.execute(
+        """
+        INSERT INTO uploaded_documents (
+            tenant_id, owner_user_id, entity_type, entity_id,
+            original_filename, stored_filename, storage_path, content_type,
+            size_bytes, sha256, extracted_text, extracted_json
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            session["tenant_id"],
+            session["user_id"],
+            entity_type,
+            entity_id,
+            original_filename,
+            stored_filename,
+            str(storage_path),
+            content_type,
+            len(contents),
+            hashlib.sha256(contents).hexdigest(),
+            extracted_text[:MAX_DOCUMENT_TEXT_CHARS],
+            json.dumps(extracted_info, ensure_ascii=False),
+        ),
+    )
+    document_id = cursor.lastrowid
+    return {
+        "id": document_id,
+        "original_filename": original_filename,
+        "download_url": f"/api/documents/{document_id}/download",
+    }
+
+
+def fetch_quote_row(cursor, quote_id: int, session: dict[str, Any]) -> dict[str, Any] | None:
+    cursor.execute(
+        """
+        SELECT q.id, q.quote_no, q.title, q.status, q.currency, q.subtotal_amount,
+               q.discount_amount, q.tax_amount, q.total_amount, q.valid_until, q.sent_at,
+               q.created_at, q.updated_at, a.name AS company_name, c.name AS contact_name,
+               o.name AS opportunity_name
+        FROM quotes q
+        LEFT JOIN accounts a ON a.id = q.account_id AND a.tenant_id = q.tenant_id AND a.deleted_at IS NULL
+        LEFT JOIN contacts c ON c.id = q.contact_id AND c.tenant_id = q.tenant_id AND c.deleted_at IS NULL
+        LEFT JOIN opportunities o ON o.id = q.opportunity_id AND o.tenant_id = q.tenant_id AND o.deleted_at IS NULL
+        WHERE q.id = %s AND q.tenant_id = %s AND q.owner_user_id = %s AND q.deleted_at IS NULL
+        """,
+        (quote_id, session["tenant_id"], session["user_id"]),
+    )
+    return cursor.fetchone()
+
+
+def fetch_contract_row(cursor, contract_id: int, session: dict[str, Any]) -> dict[str, Any] | None:
+    cursor.execute(
+        """
+        SELECT ct.id, ct.contract_no, ct.title, ct.status, ct.currency, ct.contract_amount,
+               ct.start_date, ct.end_date, ct.signed_at, ct.created_at, ct.updated_at,
+               a.name AS company_name, c.name AS contact_name, q.quote_no, o.name AS opportunity_name
+        FROM contracts ct
+        LEFT JOIN accounts a ON a.id = ct.account_id AND a.tenant_id = ct.tenant_id AND a.deleted_at IS NULL
+        LEFT JOIN contacts c ON c.id = ct.contact_id AND c.tenant_id = ct.tenant_id AND c.deleted_at IS NULL
+        LEFT JOIN quotes q ON q.id = ct.quote_id AND q.tenant_id = ct.tenant_id AND q.deleted_at IS NULL
+        LEFT JOIN opportunities o ON o.id = ct.opportunity_id AND o.tenant_id = ct.tenant_id AND o.deleted_at IS NULL
+        WHERE ct.id = %s AND ct.tenant_id = %s AND ct.owner_user_id = %s AND ct.deleted_at IS NULL
+        """,
+        (contract_id, session["tenant_id"], session["user_id"]),
+    )
+    return cursor.fetchone()
+
+
+def save_quote_from_document(
+    cursor,
+    session: dict[str, Any],
+    info: SalesDocumentInfo,
+    request: Request,
+) -> dict[str, Any]:
+    account_id = ensure_document_account(cursor, session, info, request)
+    contact_id = find_document_contact(cursor, session, account_id, info.contact_name)
+    total_amount = decimal_amount(info.total_amount)
+    opportunity_id = ensure_document_opportunity(cursor, session, info, account_id, contact_id, "proposal", total_amount)
+    quote_no = (info.document_no or "").strip()[:80] or generated_document_no("Q")
+    title = (info.title or quote_no or "문서 기반 견적").strip()[:200]
+    cursor.execute(
+        """
+        INSERT INTO quotes (
+            tenant_id, opportunity_id, account_id, contact_id, owner_user_id,
+            quote_no, title, status, currency, subtotal_amount, discount_amount,
+            tax_amount, total_amount, valid_until, sent_at, notes
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            session["tenant_id"],
+            opportunity_id,
+            account_id,
+            contact_id,
+            session["user_id"],
+            quote_no,
+            title,
+            normalize_currency(info.currency),
+            decimal_amount(info.subtotal_amount) or total_amount,
+            decimal_amount(info.discount_amount),
+            decimal_amount(info.tax_amount),
+            total_amount,
+            parse_iso_date(info.valid_until),
+            parse_iso_datetime(info.sent_at),
+            info.summary[:1000] if info.summary else None,
+        ),
+    )
+    quote_id = cursor.lastrowid
+    after = fetch_quote_row(cursor, quote_id, session)
+    write_audit_log(cursor, session, "create", "quote", quote_id, None, after, request)
+    return admin_json_row(after or {"id": quote_id})
+
+
+def save_contract_from_document(
+    cursor,
+    session: dict[str, Any],
+    info: SalesDocumentInfo,
+    request: Request,
+) -> dict[str, Any]:
+    account_id = ensure_document_account(cursor, session, info, request)
+    contact_id = find_document_contact(cursor, session, account_id, info.contact_name)
+    contract_amount = decimal_amount(info.total_amount)
+    opportunity_id = ensure_document_opportunity(cursor, session, info, account_id, contact_id, "contract", contract_amount)
+    contract_no = (info.document_no or "").strip()[:80] or generated_document_no("C")
+    title = (info.title or contract_no or "문서 기반 계약").strip()[:200]
+    cursor.execute(
+        """
+        INSERT INTO contracts (
+            tenant_id, opportunity_id, quote_id, account_id, contact_id, owner_user_id,
+            contract_no, title, status, currency, contract_amount,
+            start_date, end_date, signed_at, notes
+        )
+        VALUES (%s, %s, NULL, %s, %s, %s, %s, %s, 'draft', %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            session["tenant_id"],
+            opportunity_id,
+            account_id,
+            contact_id,
+            session["user_id"],
+            contract_no,
+            title,
+            normalize_currency(info.currency),
+            contract_amount,
+            parse_iso_date(info.start_date),
+            parse_iso_date(info.end_date),
+            parse_iso_datetime(info.signed_at),
+            info.summary[:1000] if info.summary else None,
+        ),
+    )
+    contract_id = cursor.lastrowid
+    after = fetch_contract_row(cursor, contract_id, session)
+    write_audit_log(cursor, session, "create", "contract", contract_id, None, after, request)
+    return admin_json_row(after or {"id": contract_id})
 
 
 def verify_password(password: str, password_hash: str | None) -> bool:
@@ -3565,6 +4150,111 @@ async def extract_business_card(
         return internal_error_response("이미지 분석 중 오류가 발생했습니다.")
 
 
+@app.post("/api/extract/document")
+async def extract_sales_document(request: Request, file: UploadFile = File(...)):
+    session = require_session(request)
+    enforce_content_length(request, MAX_UPLOAD_BYTES)
+    if not is_supported_document_upload(file):
+        raise HTTPException(status_code=400, detail="Word, Excel, PDF, 텍스트 파일만 문서 분석을 실행할 수 있습니다.")
+
+    contents = await read_upload_limited(file, MAX_UPLOAD_BYTES)
+    original_filename = safe_original_filename(file.filename)
+    content_type = (file.content_type or "application/octet-stream").split(";")[0].strip()
+    extracted_text = extract_document_text(contents, original_filename, content_type).strip()
+    info = extract_sales_document_info(contents, original_filename, content_type, extracted_text)
+    if info.document_type not in {"quote", "contract"}:
+        record_audit_event(
+            session,
+            "extract",
+            "sales_document",
+            None,
+            None,
+            {
+                "filename": original_filename,
+                "document_type": info.document_type,
+                "saved": False,
+                "size_bytes": len(contents),
+            },
+            request,
+        )
+        return {
+            "success": True,
+            "saved": False,
+            "document_type": info.document_type,
+            "reply": "업로드한 문서를 분석했지만 견적서나 계약서로 확정하지 못해 DB에는 저장하지 않았습니다.",
+            "extracted": info.model_dump(),
+        }
+
+    storage_path, stored_filename = stored_document_path(session, original_filename)
+    entity_type = "quote" if info.document_type == "quote" else "contract"
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        if info.document_type == "quote":
+            entity = save_quote_from_document(cursor, session, info, request)
+            entity_id = entity["id"]
+            target_menu = "quotes"
+        else:
+            entity = save_contract_from_document(cursor, session, info, request)
+            entity_id = entity["id"]
+            target_menu = "contracts"
+
+        storage_path.write_bytes(contents)
+        document = insert_uploaded_document(
+            cursor,
+            session,
+            entity_type,
+            entity_id,
+            original_filename,
+            stored_filename,
+            storage_path,
+            content_type,
+            contents,
+            extracted_text,
+            info.model_dump(),
+        )
+        write_audit_log(
+            cursor,
+            session,
+            "create",
+            "uploaded_documents",
+            document["id"],
+            None,
+            {
+                **document,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "size_bytes": len(contents),
+                "sha256": hashlib.sha256(contents).hexdigest(),
+            },
+            request,
+        )
+
+    record_audit_event(
+        session,
+        "extract",
+        "sales_document",
+        entity_id,
+        None,
+        {
+            "filename": original_filename,
+            "document_type": info.document_type,
+            "document_id": document["id"],
+            "saved": True,
+        },
+        request,
+    )
+    return {
+        "success": True,
+        "saved": True,
+        "document_type": info.document_type,
+        "target_menu": target_menu,
+        "entity": entity,
+        "document": document,
+        "extracted": info.model_dump(),
+        "reply": f"{'견적서' if info.document_type == 'quote' else '계약서'} 문서를 분석해 DB에 저장했습니다.",
+    }
+
+
 @app.post("/api/extract/sns")
 async def extract_sns_links(payload: SnsLinksRequest, request: Request):
     session = require_session(request)
@@ -3665,6 +4355,49 @@ async def inspect_sns_links(payload: SnsLinksRequest, request: Request):
     except Exception as error:
         print("SNS inspection failed:", error)
         return internal_error_response("SNS 링크 정보를 확인하는 중 오류가 발생했습니다.")
+
+
+@app.get("/api/documents/{document_id}/download")
+async def download_document(document_id: int, request: Request):
+    session = require_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT id, tenant_id, owner_user_id, original_filename, storage_path, content_type
+            FROM uploaded_documents
+            WHERE id = %s
+              AND tenant_id = %s
+              AND owner_user_id = %s
+              AND deleted_at IS NULL
+            """,
+            (document_id, session["tenant_id"], session["user_id"]),
+        )
+        document = cursor.fetchone()
+    if not document:
+        raise HTTPException(status_code=404, detail="문서 파일을 찾을 수 없습니다.")
+    path = Path(document["storage_path"]).resolve()
+    base = DOCUMENT_UPLOAD_DIR.resolve()
+    try:
+        path.relative_to(base)
+    except Exception:
+        raise HTTPException(status_code=403, detail="허용되지 않은 문서 경로입니다.")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="문서 파일이 서버에 없습니다.")
+    record_audit_event(
+        session,
+        "download",
+        "uploaded_document",
+        document_id,
+        None,
+        {"filename": document["original_filename"]},
+        request,
+    )
+    return FileResponse(
+        path,
+        media_type=document.get("content_type") or "application/octet-stream",
+        filename=document["original_filename"],
+    )
 
 
 @app.get("/api/db/health")
@@ -3938,7 +4671,10 @@ async def list_quotes(
                 q.valid_until, q.sent_at, q.accepted_at, q.rejected_at, q.created_at, q.updated_at,
                 a.name AS company_name,
                 c.name AS contact_name,
-                o.name AS opportunity_name
+                o.name AS opportunity_name,
+                ud.id AS document_id,
+                ud.original_filename AS document_filename,
+                CONCAT('/api/documents/', ud.id, '/download') AS document_url
             FROM quotes q
             LEFT JOIN accounts a
                    ON a.id = q.account_id
@@ -3952,6 +4688,16 @@ async def list_quotes(
                    ON o.id = q.opportunity_id
                   AND o.tenant_id = q.tenant_id
                   AND o.deleted_at IS NULL
+            LEFT JOIN uploaded_documents ud
+                   ON ud.id = (
+                       SELECT MAX(ud2.id)
+                       FROM uploaded_documents ud2
+                       WHERE ud2.tenant_id = q.tenant_id
+                         AND ud2.owner_user_id = q.owner_user_id
+                         AND ud2.entity_type = 'quote'
+                         AND ud2.entity_id = q.id
+                         AND ud2.deleted_at IS NULL
+                   )
             WHERE q.tenant_id = %s
               AND q.owner_user_id = %s
               AND q.deleted_at IS NULL
@@ -4003,7 +4749,10 @@ async def list_contracts(
                 a.name AS company_name,
                 c.name AS contact_name,
                 q.quote_no,
-                o.name AS opportunity_name
+                o.name AS opportunity_name,
+                ud.id AS document_id,
+                ud.original_filename AS document_filename,
+                CONCAT('/api/documents/', ud.id, '/download') AS document_url
             FROM contracts ct
             LEFT JOIN accounts a
                    ON a.id = ct.account_id
@@ -4021,6 +4770,16 @@ async def list_contracts(
                    ON o.id = ct.opportunity_id
                   AND o.tenant_id = ct.tenant_id
                   AND o.deleted_at IS NULL
+            LEFT JOIN uploaded_documents ud
+                   ON ud.id = (
+                       SELECT MAX(ud2.id)
+                       FROM uploaded_documents ud2
+                       WHERE ud2.tenant_id = ct.tenant_id
+                         AND ud2.owner_user_id = ct.owner_user_id
+                         AND ud2.entity_type = 'contract'
+                         AND ud2.entity_id = ct.id
+                         AND ud2.deleted_at IS NULL
+                   )
             WHERE ct.tenant_id = %s
               AND ct.owner_user_id = %s
               AND ct.deleted_at IS NULL
