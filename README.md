@@ -698,6 +698,27 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 - `uv run python -c "import main; print('app import ok')"` 통과
 - `extract_social_links` 수동 호출로 `https://www.linkedin.com/in/hyundohbak/?locale=ko_KR` 감지 확인
 
+### 2026-05-01: Facebook 공개 프로필 이름 추출 보강
+
+변경 파일:
+- `main.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- SNS 링크 처리 시 검색 결과만 보지 않고 공개 프로필 HTML의 `og:title`, `twitter:title`, `title`, `description` 메타데이터를 먼저 읽도록 했습니다.
+- `박광영 | Facebook` 같은 공개 프로필 제목은 `박광영`으로 정리해 연락처 이름 후보로 사용합니다.
+- 공개 메타데이터에서 확인한 이름과 검색/AI 추출 이름이 충돌하면 잘못된 회사, 직책, 이메일을 저장하지 않도록 방어했습니다.
+- 공개 메타데이터 이름이 URL 핸들이 아닌 실제 이름으로 보이면 그 이름을 최우선 근거로 사용합니다.
+- Facebook이 로그인 화면이나 차단 페이지를 반환하는 경우에는 해당 제목을 이름으로 쓰지 않고 기존 검색 기반 보강으로 fallback합니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- `social_profile_name_from_metadata({'og_title': '박광영 | Facebook'}, 'Facebook')` 수동 호출로 `박광영` 추출 확인
+- 공개 메타데이터 이름과 AI 결과가 충돌하는 단위 테스트에서 잘못된 회사/이메일이 제거되는 것 확인
+
 ### 2026-05-01: 클라우드 SaaS 운영 기준 보안/안정성 보강
 
 변경 파일:

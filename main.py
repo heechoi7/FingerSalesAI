@@ -2,12 +2,14 @@ from pathlib import Path
 import base64
 import hashlib
 import hmac
+import html as html_lib
 import os
 import json
 import re
 import time
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
+from urllib.request import Request as UrlRequest, urlopen
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
@@ -469,8 +471,149 @@ def extract_json_object(text: str) -> dict[str, Any]:
             return {}
 
 
+def clean_html_text(value: str) -> str:
+    text = html_lib.unescape(value or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def html_metadata_value(document: str, *keys: str) -> str:
+    wanted = {key.lower() for key in keys}
+    for tag in re.findall(r"<meta\b[^>]*>", document or "", re.IGNORECASE | re.DOTALL):
+        attrs: dict[str, str] = {}
+        for match in re.finditer(r"([a-zA-Z_:.-]+)\s*=\s*(['\"])(.*?)\2", tag, re.DOTALL):
+            attrs[match.group(1).lower()] = clean_html_text(match.group(3))
+        key = (attrs.get("property") or attrs.get("name") or "").lower()
+        if key in wanted and attrs.get("content"):
+            return attrs["content"]
+    return ""
+
+
+def fetch_social_public_metadata(link: dict[str, Any]) -> dict[str, str]:
+    metadata = {"title": "", "og_title": "", "twitter_title": "", "description": "", "og_description": "", "fetch_error": ""}
+    try:
+        request = UrlRequest(
+            link["url"],
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            },
+        )
+        with urlopen(request, timeout=6) as response:
+            raw = response.read(300_000)
+            charset = response.headers.get_content_charset() or "utf-8"
+        try:
+            document = raw.decode(charset, errors="replace")
+        except LookupError:
+            document = raw.decode("utf-8", errors="replace")
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", document, re.IGNORECASE | re.DOTALL)
+        metadata.update(
+            {
+                "title": clean_html_text(title_match.group(1)) if title_match else "",
+                "og_title": html_metadata_value(document, "og:title"),
+                "twitter_title": html_metadata_value(document, "twitter:title"),
+                "description": html_metadata_value(document, "description"),
+                "og_description": html_metadata_value(document, "og:description"),
+            }
+        )
+    except Exception as error:
+        metadata["fetch_error"] = str(error)
+    return metadata
+
+
+def strip_social_title_suffix(value: str, platform: str) -> str:
+    text = clean_html_text(value)
+    if not text:
+        return ""
+
+    low = text.lower()
+    blocked_titles = (
+        "facebook에 로그인",
+        "log into facebook",
+        "log in to facebook",
+        "log in",
+        "sign up",
+        "login",
+        "로그인",
+        "가입",
+        "browser not supported",
+        "unsupported browser",
+    )
+    if any(blocked in low for blocked in blocked_titles):
+        return ""
+
+    labels = {
+        "facebook",
+        "linkedin",
+        "instagram",
+        "x",
+        "twitter",
+        "threads",
+        "tiktok",
+        "youtube",
+        "github",
+        "medium",
+        "naver blog",
+        "naver",
+    }
+    if platform:
+        labels.add(platform.lower())
+    label_pattern = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+    text = re.sub(rf"\s*[\|\-–—·]\s*(?:{label_pattern})\s*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s*\|\s*로그인.*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s*-\s*프로필.*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    if text.lower() in labels:
+        return ""
+    return text if len(text) <= 80 else ""
+
+
+def normalized_person_name(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", value or "").lower()
+
+
+def social_profile_name_from_metadata(metadata: dict[str, str], platform: str) -> str:
+    for key in ("og_title", "twitter_title", "title"):
+        name = strip_social_title_suffix(metadata.get(key, ""), platform)
+        if name:
+            return name
+    return ""
+
+
+def metadata_name_is_authoritative(link: dict[str, Any], metadata_name: str) -> bool:
+    if not metadata_name:
+        return False
+    handle_name = readable_handle(link.get("handle") or "")
+    return normalized_person_name(metadata_name) != normalized_person_name(handle_name)
+
+
+def extracted_name_conflicts(metadata_name: str, extracted_name: str) -> bool:
+    left = normalized_person_name(metadata_name)
+    right = normalized_person_name(extracted_name)
+    if not left or not right:
+        return False
+    return left not in right and right not in left
+
+
 def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
-    query = f"{link['url']} {link['platform']} {link.get('handle') or link.get('display_name')} profile company career"
+    public_metadata = fetch_social_public_metadata(link)
+    metadata_name = social_profile_name_from_metadata(public_metadata, link["platform"])
+    query_parts = [
+        f'"{link["url"]}"',
+        link["platform"],
+        link.get("handle") or "",
+        link.get("display_name") or "",
+        metadata_name,
+        public_metadata.get("og_title", ""),
+        public_metadata.get("title", ""),
+        "profile company career",
+    ]
+    query = " ".join(part for part in query_parts if part)
     try:
         search_tool = TavilySearchResults(max_results=5)
         search_results = search_tool.invoke({"query": query})
@@ -492,7 +635,11 @@ def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
                 HumanMessage(
                     content=(
                         f"SNS link metadata:\n{json.dumps(link, ensure_ascii=False)}\n\n"
+                        f"Public page metadata:\n{json.dumps(public_metadata, ensure_ascii=False)}\n\n"
                         f"Search results:\n{json.dumps(search_results, ensure_ascii=False)}\n\n"
+                        "If public page metadata contains a clear profile title such as '<person name> | Facebook', "
+                        "use that person name as contact_name. "
+                        "Do not replace a clear metadata-derived person name with a different search-result person. "
                         "Extract the most likely person/company CRM fields. "
                         "briefing must include sales-relevant details, career context, likely organization, and follow-up angle. "
                         "Do not invent unsupported emails or phone numbers."
@@ -504,6 +651,25 @@ def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
     except Exception as error:
         extracted = {"briefing": f"SNS 상세 브리핑 생성 중 오류가 발생했습니다: {error}"}
 
+    extracted_name = str(extracted.get("contact_name") or "").strip()
+    authoritative_metadata_name = metadata_name if metadata_name_is_authoritative(link, metadata_name) else ""
+    if authoritative_metadata_name:
+        if extracted_name_conflicts(authoritative_metadata_name, extracted_name):
+            extracted = {
+                "contact_name": authoritative_metadata_name,
+                "company_name": "",
+                "job_title": "",
+                "job_position": "",
+                "email": "",
+                "summary": f"{link['platform']} 공개 프로필 제목에서 확인한 이름입니다.",
+                "briefing": (
+                    f"{link['platform']} 공개 프로필 메타데이터에서 '{authoritative_metadata_name}' 이름을 확인했습니다. "
+                    "검색 결과의 다른 인물 정보와 충돌해 회사, 직책, 연락처는 확정하지 않았습니다."
+                ),
+            }
+        else:
+            extracted["contact_name"] = authoritative_metadata_name
+
     enriched = {
         "contact_name": str(extracted.get("contact_name") or "").strip(),
         "company_name": str(extracted.get("company_name") or "").strip(),
@@ -512,6 +678,7 @@ def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
         "email": str(extracted.get("email") or "").strip(),
         "summary": str(extracted.get("summary") or "").strip(),
         "briefing": str(extracted.get("briefing") or "").strip(),
+        "public_metadata": public_metadata,
         "search_results": search_results,
     }
     return {**link, "enriched": enriched}
