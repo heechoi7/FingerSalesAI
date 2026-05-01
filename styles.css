@@ -952,7 +952,8 @@ h3 {
   gap: 10px;
 }
 
-.detail-list div {
+.detail-list > .detail-field-row,
+.detail-tab-panel > .detail-field-row {
   display: grid;
   grid-template-columns: 86px 1fr;
   gap: 12px;
@@ -973,13 +974,16 @@ h3 {
 
 .detail-list-tabbed {
   padding: 0;
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .detail-tabs {
   height: 100%;
   min-height: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
 }
 
@@ -987,6 +991,7 @@ h3 {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
   padding: 10px 14px 0;
   border-bottom: 1px solid var(--line);
 }

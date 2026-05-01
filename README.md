@@ -423,6 +423,23 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 견적/계약 상세 탭 레이아웃 깨짐 수정
+
+변경 파일:
+- `index.html`
+- `script.js`
+- `styles.css`
+- `README.md`
+
+변경 내용:
+- 견적/계약 상세 탭 컨테이너가 기존 상세 필드 그리드 스타일을 상속받아 왼쪽으로 찌그러지는 문제를 수정했습니다.
+- 상세 항목 행에 `detail-field-row` 클래스를 부여하고 CSS 선택자를 해당 행에만 적용하도록 좁혔습니다.
+- 문서 뷰어 컨테이너가 라벨/값 2열 레이아웃으로 강제되지 않도록 탭 내부 스타일 범위를 분리했습니다.
+
+검증:
+- `node --check script.js`
+- `git diff --check`
+
 ### 2026-05-01: 견적/계약 상세 탭과 업로드 문서 내부 뷰어
 
 변경 파일:

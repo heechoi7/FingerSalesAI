@@ -419,7 +419,7 @@ function detailRowsHtml(rows) {
   return rows
     .map(([label, value]) => {
       const content = value && typeof value === "object" && value.html ? value.html : escapeHtml(value || "-");
-      return `<div><dt>${escapeHtml(label)}</dt><dd>${content}</dd></div>`;
+      return `<div class="detail-field-row"><dt>${escapeHtml(label)}</dt><dd>${content}</dd></div>`;
     })
     .join("");
 }
