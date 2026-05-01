@@ -94,9 +94,9 @@ SOCIAL_PLATFORM_HOSTS = {
 }
 
 SOCIAL_URL_RE = re.compile(
-    r"(?:https?://)?(?:www\.)?(?:m\.)?"
+    r"(?:https?://)?(?:[a-z0-9-]+\.)*"
     r"(?:linkedin\.com|facebook\.com|fb\.com|instagram\.com|x\.com|twitter\.com|threads\.net|"
-    r"youtube\.com|youtu\.be|tiktok\.com|github\.com|blog\.naver\.com|medium\.com)"
+    r"youtube\.com|youtu\.be|tiktok\.com|github\.com|naver\.com|medium\.com)"
     r"/[^\s<>()\"']*",
     re.IGNORECASE,
 )

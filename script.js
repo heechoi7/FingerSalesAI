@@ -606,7 +606,7 @@ function createConversationPlan(text) {
 function extractSocialUrls(text) {
   const matches =
     String(text || "").match(
-      /(?:https?:\/\/)?(?:www\.)?(?:m\.)?(?:linkedin\.com|facebook\.com|fb\.com|instagram\.com|x\.com|twitter\.com|threads\.net|youtube\.com|youtu\.be|tiktok\.com|github\.com|blog\.naver\.com|medium\.com)\/[^\s<>()"']*/gi,
+      /(?:https?:\/\/)?(?:[a-z0-9-]+\.)*(?:linkedin\.com|facebook\.com|fb\.com|instagram\.com|x\.com|twitter\.com|threads\.net|youtube\.com|youtu\.be|tiktok\.com|github\.com|naver\.com|medium\.com)\/[^\s<>()"']*/gi,
     ) || [];
   const socialHostPattern =
     /(^|\.)((linkedin|facebook|instagram|threads|youtube|youtu|tiktok|github|medium)\.com|fb\.com|x\.com|twitter\.com|youtu\.be|blog\.naver\.com)$/i;

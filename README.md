@@ -656,6 +656,25 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 - `uv run python -c "import main; print('app import ok')"` 통과
 - `extract_social_links` 수동 호출로 LinkedIn 개인/회사, Instagram 링크 분류 확인
 
+### 2026-05-01: LinkedIn 서브도메인 SNS 감지 보강
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `README.md`
+
+작업 내용:
+- LinkedIn 링크가 답변 플로우로 빠지고 고객 정보가 저장되지 않을 수 있는 원인을 확인했습니다.
+- 기존 감지 규칙은 `linkedin.com`, `www.linkedin.com`, `m.linkedin.com` 중심이라 `kr.linkedin.com` 같은 지역 서브도메인을 놓칠 수 있었습니다.
+- 프론트와 백엔드 SNS URL 감지 규칙을 `*.linkedin.com` 형태까지 인식하도록 확장했습니다.
+- 같은 방식으로 지원 SNS의 일반 서브도메인 URL도 더 안정적으로 감지되도록 했습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- `extract_social_links` 수동 호출로 `kr.linkedin.com/in/...`, `www.linkedin.com/company/...`, `m.linkedin.com/in/...` 감지 확인
+
 ### 2026-05-01: 클라우드 SaaS 운영 기준 보안/안정성 보강
 
 변경 파일:
