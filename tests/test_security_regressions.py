@@ -178,6 +178,8 @@ class SecurityRegressionTests(unittest.TestCase):
 
     def test_sales_activity_schedule_intent_is_detected(self):
         self.assertTrue(main.is_sales_activity_schedule_request("SK 렌터카 이재성 내일 오후 2시 미팅 일정 등록해줘"))
+        self.assertTrue(main.is_sales_activity_schedule_request("내일 미팅 일정 취소해줘"))
+        self.assertTrue(main.is_sales_activity_schedule_request("영업활동 목록 보여줘"))
         self.assertFalse(main.is_sales_activity_schedule_request("SK 렌터카 정보 알려줘"))
 
     def test_sales_activity_due_at_parses_relative_korean_time(self):
@@ -188,6 +190,32 @@ class SecurityRegressionTests(unittest.TestCase):
 
     def test_sales_activity_type_parses_call(self):
         self.assertEqual(main.parse_sales_activity_type("내일 오전 10시 전화 일정 등록"), "call")
+
+    def test_sales_activity_new_due_at_uses_last_date_candidate(self):
+        now = main.datetime(2026, 5, 1, 10, 0)
+        due_at = main.parse_sales_activity_new_due_at("내일 일정을 모레 오후 3시로 변경", now)
+
+        self.assertEqual(due_at, main.datetime(2026, 5, 3, 15, 0))
+
+    def test_sales_activity_recurrence_rule_caps_count(self):
+        first_due_at = main.datetime(2026, 5, 4, 10, 0)
+        rule = main.parse_recurrence_rule("매주 월요일 오전 10시 99회 반복 일정 등록", first_due_at)
+
+        self.assertEqual(rule["frequency"], "weekly")
+        self.assertEqual(rule["count"], main.MAX_RECURRING_ACTIVITY_COUNT)
+        self.assertEqual(main.recurrence_due_at(rule, 1), main.datetime(2026, 5, 11, 10, 0))
+
+    def test_sales_activity_time_does_not_read_repeat_count_as_minutes(self):
+        now = main.datetime(2026, 5, 1, 10, 0)
+        due_at = main.parse_sales_activity_due_at("매주 월요일 오전 10시 2회 반복 일정 등록", now)
+
+        self.assertEqual(due_at, main.datetime(2026, 5, 4, 10, 0))
+
+    def test_sales_activity_weekday_parser_ignores_schedule_word(self):
+        now = main.datetime(2026, 5, 1, 10, 0)
+        candidates = main.parse_sales_activity_due_at_candidates("일정을 다음 주 화요일 오후 3시로 변경", now)
+
+        self.assertEqual(candidates, [main.datetime(2026, 5, 5, 15, 0)])
 
 
 if __name__ == "__main__":

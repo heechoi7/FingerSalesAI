@@ -1392,12 +1392,12 @@ async function requestChatReply(text) {
     appendMessage("ai", reply, { richText: true });
     if (result.activity_schedule) {
       if (result.activity_saved && result.calendar) {
-        updatePlanStep(planSteps, "research", "done", 100, "영업활동 일정을 DB에 저장했습니다.");
-        updatePlanStep(planSteps, "answer", "done", 100, "캘린더 메뉴를 열어 저장된 일정을 확인합니다.");
+        updatePlanStep(planSteps, "research", "done", 100, "영업활동 일정 관리 요청을 DB에 반영했습니다.");
+        updatePlanStep(planSteps, "answer", "done", 100, "캘린더 메뉴를 열어 반영된 일정을 확인합니다.");
         calendarCursor = new Date(Number(result.calendar.year), Number(result.calendar.month) - 1, 1);
         activateMainMenu("calendar");
         await loadMenu("calendar");
-        addLog("Schedule Agent", "영업활동 일정을 저장하고 캘린더를 열었습니다.", "done");
+        addLog("Schedule Agent", "영업활동 일정 관리 요청을 처리하고 캘린더를 열었습니다.", "done");
       } else {
         updatePlanStep(planSteps, "research", "done", 100, "일정 등록에 필요한 추가 정보를 확인했습니다.");
         updatePlanStep(planSteps, "answer", "done", 100, "추가 입력 요청을 채팅창에 표시했습니다.");

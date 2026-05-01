@@ -343,9 +343,12 @@ http://localhost:8000/
 - `POST /api/chat`
   - 일반 질문은 기존 대화/검색 에이전트 흐름으로 처리
   - "일정 등록", "영업활동 추가", "미팅 잡아줘", "전화 일정 등록"처럼 영업활동 일정 등록 의도가 감지되면 LLM 호출 전에 서버가 `activities`에 `planned` 상태로 저장
+  - "일정 취소", "날짜 변경", "다음 주 화요일로 옮겨줘", "반복 일정 등록", "일정 목록 보여줘" 같은 일정 관리 명령도 서버가 직접 처리
   - 고객은 채팅 컨텍스트의 선택 고객을 우선 사용하고, 메시지에 등록된 고객의 회사명/고객명이 들어 있으면 해당 고객을 매칭
   - 일정 날짜는 `오늘`, `내일`, `모레`, `YYYY-MM-DD`, `M월 D일`, `이번/다음 주 요일` 형태를 지원
   - 시간은 `오전/오후 N시`, `HH:MM`, `N시 반` 형태를 지원하며, 시간이 없으면 오전 9시로 저장
+  - 반복 일정은 `매일`, `매주`, `매월`, `N회`를 지원하며 `MAX_RECURRING_ACTIVITY_COUNT` 개수까지만 생성
+  - 취소는 `activities.status='cancelled'`, 날짜 변경은 `activities.due_at` 업데이트로 처리
   - 저장 완료 응답에는 `activity_saved`, `activity`, `calendar`가 포함되고 프론트가 캘린더 메뉴를 자동으로 열어 해당 월을 표시
 
 - `POST /api/extract/sns`
@@ -396,6 +399,30 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 영업활동 일정 관리 명령 확장
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `tests/test_security_regressions.py`
+- `.env.example`
+- `README.md`
+
+작업 내용:
+- 에이전트 채팅에서 영업활동 일정 취소, 날짜/시간 변경, 반복 일정 등록, 예정 일정 조회를 처리하도록 확장했습니다.
+- 일정 취소는 대상 `activities` 행의 `status`를 `cancelled`로 변경합니다.
+- 날짜/시간 변경은 대상 `activities.due_at`을 새 일정으로 업데이트합니다.
+- 반복 일정은 `매일`, `매주`, `매월` 규칙과 `N회` 횟수를 파싱해 여러 개의 `activities` 행으로 저장합니다.
+- 반복 생성 개수는 `MAX_RECURRING_ACTIVITY_COUNT` 환경 변수로 제한하며 기본값은 `24`입니다.
+- 일정 변경/취소 후에도 캘린더 메뉴를 자동으로 열어 반영된 월을 보여주도록 프론트 메시지를 일반화했습니다.
+- 한국어 날짜 파서가 `일정`의 `일`을 요일로 오인하거나 `2회`를 `2분`으로 오인하지 않도록 보강했습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py tests/test_security_regressions.py` 통과
+- `uv run python -m unittest discover -s tests` 통과
+- FastAPI TestClient로 반복 등록, 날짜 변경, 취소를 실제 DB에서 확인 후 테스트 활동 soft delete
 
 ### 2026-05-01: 에이전트 채팅 기반 영업활동 일정 등록
 
