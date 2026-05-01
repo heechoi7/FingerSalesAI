@@ -1582,6 +1582,13 @@ async function requestChatReply(text, options = {}) {
       updateCustomerDetail(data, "DB · 명령 자동 선택", result.resolved_customer);
       addLog("Conversation Agent", "명령에 언급된 단일 고객을 자동 선택했습니다.", "done");
     }
+    if (result.db_list_query && result.target_menu) {
+      updatePlanStep(planSteps, "research", "done", 100, "요청한 화면의 DB 리스트를 조회했습니다.");
+      updatePlanStep(planSteps, "answer", "done", 100, "해당 메뉴를 열어 조회 화면과 함께 확인합니다.");
+      activateMainMenu(result.target_menu);
+      await loadMenu(result.target_menu);
+      addLog("List Agent", `${result.target_menu} 메뉴의 DB 리스트 조회 명령을 처리했습니다.`, "done");
+    }
     if (result.activity_schedule) {
       if (result.activity_saved && result.calendar) {
         updatePlanStep(planSteps, "research", "done", 100, "영업활동 일정 관리 요청을 DB에 반영했습니다.");

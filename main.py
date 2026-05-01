@@ -5023,6 +5023,357 @@ async def delete_customer(customer_id: int, request: Request):
     return {"success": True}
 
 
+LIST_QUERY_TARGETS = {
+    "customers": {"label": "고객", "menu": "customers", "record_key": "customers", "entity_type": "customer"},
+    "opportunities": {"label": "파이프라인", "menu": "pipeline", "record_key": "opportunities", "entity_type": "opportunity"},
+    "calendar": {"label": "캘린더/영업활동", "menu": "calendar", "record_key": "events", "entity_type": "calendar"},
+    "quotes": {"label": "견적", "menu": "quotes", "record_key": "quotes", "entity_type": "quote"},
+    "contracts": {"label": "계약", "menu": "contracts", "record_key": "contracts", "entity_type": "contract"},
+}
+
+LIST_QUERY_FILTER_FIELDS = {
+    "customers": {
+        "직위": ("title", "job_title"),
+        "직책": ("title", "job_title"),
+        "직급": ("title", "job_title"),
+        "부서": ("department",),
+        "소속": ("department",),
+        "회사명": ("company_name",),
+        "회사": ("company_name",),
+        "고객명": ("contact_name", "name"),
+        "이름": ("contact_name", "name"),
+        "이메일": ("email",),
+        "전화": ("phone", "mobile"),
+        "휴대전화": ("mobile", "phone"),
+    },
+    "opportunities": {
+        "영업기회명": ("name",),
+        "기회명": ("name",),
+        "이름": ("name",),
+        "상태": ("status", "stage_name", "stage_code"),
+        "단계": ("stage_name", "stage_code", "status"),
+        "회사명": ("company_name",),
+        "회사": ("company_name",),
+        "고객명": ("contact_name",),
+    },
+    "calendar": {
+        "제목": ("title",),
+        "일정명": ("title",),
+        "활동명": ("title",),
+        "상태": ("status",),
+        "회사명": ("company_name",),
+        "회사": ("company_name",),
+        "유형": ("source_type", "location"),
+        "분류": ("source_type", "location"),
+        "활동유형": ("source_type", "location"),
+    },
+    "quotes": {
+        "견적명": ("title",),
+        "제목": ("title",),
+        "상태": ("status",),
+        "회사명": ("company_name",),
+        "회사": ("company_name",),
+        "고객명": ("contact_name",),
+        "견적번호": ("quote_no",),
+        "번호": ("quote_no",),
+    },
+    "contracts": {
+        "계약명": ("title",),
+        "제목": ("title",),
+        "상태": ("status",),
+        "회사명": ("company_name",),
+        "회사": ("company_name",),
+        "고객명": ("contact_name",),
+        "계약번호": ("contract_no",),
+        "번호": ("contract_no",),
+    },
+}
+
+
+def detect_list_query_target(message: str) -> str:
+    text = message or ""
+    if "파이프라인" in text or "영업기회" in text:
+        return "opportunities"
+    if "캘린더" in text or "영업활동" in text or "일정" in text:
+        return "calendar"
+    if "견적" in text:
+        return "quotes"
+    if "계약" in text:
+        return "contracts"
+    if "고객" in text:
+        return "customers"
+    return "customers"
+
+
+def normalize_list_filter_value(value: Any) -> str:
+    text = str(value or "").strip().strip("\"'`“”‘’")
+    text = re.sub(r"(인|인것|인거|으로|로|이며|이고|이고요|입니다)$", "", text).strip()
+    return text
+
+
+def extract_list_query_filters(target: str, message: str) -> dict[str, str]:
+    filters: dict[str, str] = {}
+    text = message or ""
+    for label in LIST_QUERY_FILTER_FIELDS.get(target, {}):
+        pattern = rf"{re.escape(label)}\s*(?:가|이|은|는|:|=)?\s*['\"“”‘’`]?([가-힣A-Za-z0-9_.@+\-/& ]{{1,40}})"
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        value = normalize_list_filter_value(match.group(1))
+        value = re.split(r"\s*인\s*(?:고객|파이프라인|영업기회|캘린더|영업활동|일정|견적|계약|리스트|목록)", value)[0].strip()
+        value = re.split(r"\s*(?:리스트|목록|조회|검색|알려|보여)\b", value)[0].strip()
+        value = re.split(r"\s*(?:이고|이며|이면서|그리고|,|\.|;)\s*", value)[0].strip()
+        if value:
+            filters[label] = value
+
+    if target == "customers" and not any(label in filters for label in ("직위", "직책", "직급")):
+        role_match = re.search(r"([가-힣A-Za-z0-9_.@+\-/&]{2,30})인\s+고객", text)
+        if role_match:
+            filters["직위"] = normalize_list_filter_value(role_match.group(1))
+    return filters
+
+
+def row_matches_list_filters(target: str, row: dict[str, Any], filters: dict[str, str]) -> bool:
+    field_map = LIST_QUERY_FILTER_FIELDS.get(target, {})
+    for label, expected in filters.items():
+        normalized_expected = normalize_customer_mention_text(expected)
+        if not normalized_expected:
+            continue
+        columns = field_map.get(label, ())
+        if not columns:
+            continue
+        if not any(normalized_expected in normalize_customer_mention_text(row.get(column)) for column in columns):
+            return False
+    return True
+
+
+def list_query_condition_text(filters: dict[str, str]) -> str:
+    if not filters:
+        return "조건 없음"
+    return ", ".join(f"{label}={value}" for label, value in filters.items())
+
+
+def parse_calendar_query_month(message: str) -> tuple[int, int]:
+    now = app_now()
+    text = message or ""
+    year = now.year
+    month = now.month
+    year_match = re.search(r"(20\d{2})\s*년", text)
+    month_match = re.search(r"(\d{1,2})\s*월", text)
+    if year_match:
+        year = int(year_match.group(1))
+    if month_match:
+        month = max(1, min(12, int(month_match.group(1))))
+    return year, month
+
+
+def fetch_list_query_records(cursor, session: dict[str, Any], target: str, message: str) -> list[dict[str, Any]]:
+    tenant_id = session["tenant_id"]
+    user_id = session["user_id"]
+    if target == "customers":
+        return fetch_owned_customer_rows(cursor, tenant_id, user_id)
+
+    if target == "opportunities":
+        cursor.execute(
+            """
+            SELECT
+                o.id, o.name, o.status, o.amount, o.currency, o.probability_percent,
+                o.close_date, o.created_at, o.updated_at,
+                a.name AS company_name,
+                c.name AS contact_name,
+                ps.name AS stage_name,
+                ps.stage_code
+            FROM opportunities o
+            LEFT JOIN accounts a
+                   ON a.id = o.account_id
+                  AND a.tenant_id = o.tenant_id
+                  AND a.deleted_at IS NULL
+            LEFT JOIN contacts c
+                   ON c.id = o.contact_id
+                  AND c.tenant_id = o.tenant_id
+                  AND c.deleted_at IS NULL
+            LEFT JOIN pipeline_stages ps
+                   ON ps.id = o.pipeline_stage_id
+                  AND ps.tenant_id = o.tenant_id
+                  AND ps.deleted_at IS NULL
+            WHERE o.tenant_id = %s
+              AND o.owner_user_id = %s
+              AND o.deleted_at IS NULL
+            ORDER BY o.updated_at DESC, o.id DESC
+            LIMIT 500
+            """,
+            (tenant_id, user_id),
+        )
+        return cursor.fetchall()
+
+    if target == "calendar":
+        year, month = parse_calendar_query_month(message)
+        start_date = date(year, month, 1)
+        end_date = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+        cursor.execute(
+            """
+            SELECT
+                a.id, 'activity' AS source_type, a.subject AS title, a.status,
+                a.due_at AS starts_at, a.completed_at AS ends_at,
+                a.activity_type AS location, ac.name AS company_name
+            FROM activities a
+            LEFT JOIN accounts ac
+                   ON ac.id = a.account_id
+                  AND ac.tenant_id = a.tenant_id
+                  AND ac.deleted_at IS NULL
+            WHERE a.tenant_id = %s
+              AND a.owner_user_id = %s
+              AND a.deleted_at IS NULL
+              AND a.due_at >= %s
+              AND a.due_at < %s
+            ORDER BY a.due_at, a.id
+            LIMIT 500
+            """,
+            (tenant_id, user_id, start_date, end_date),
+        )
+        return cursor.fetchall()
+
+    if target == "quotes":
+        cursor.execute(
+            """
+            SELECT
+                q.id, q.quote_no, q.title, q.status, q.currency, q.total_amount,
+                q.valid_until, q.sent_at, q.accepted_at, q.rejected_at, q.created_at, q.updated_at,
+                a.name AS company_name,
+                c.name AS contact_name,
+                o.name AS opportunity_name
+            FROM quotes q
+            LEFT JOIN accounts a
+                   ON a.id = q.account_id
+                  AND a.tenant_id = q.tenant_id
+                  AND a.deleted_at IS NULL
+            LEFT JOIN contacts c
+                   ON c.id = q.contact_id
+                  AND c.tenant_id = q.tenant_id
+                  AND c.deleted_at IS NULL
+            LEFT JOIN opportunities o
+                   ON o.id = q.opportunity_id
+                  AND o.tenant_id = q.tenant_id
+                  AND o.deleted_at IS NULL
+            WHERE q.tenant_id = %s
+              AND q.owner_user_id = %s
+              AND q.deleted_at IS NULL
+            ORDER BY q.updated_at DESC, q.id DESC
+            LIMIT 500
+            """,
+            (tenant_id, user_id),
+        )
+        return cursor.fetchall()
+
+    if target == "contracts":
+        cursor.execute(
+            """
+            SELECT
+                ct.id, ct.contract_no, ct.title, ct.status, ct.currency, ct.contract_amount,
+                ct.start_date, ct.end_date, ct.signed_at, ct.activated_at, ct.terminated_at, ct.created_at, ct.updated_at,
+                a.name AS company_name,
+                c.name AS contact_name,
+                q.quote_no,
+                o.name AS opportunity_name
+            FROM contracts ct
+            LEFT JOIN accounts a
+                   ON a.id = ct.account_id
+                  AND a.tenant_id = ct.tenant_id
+                  AND a.deleted_at IS NULL
+            LEFT JOIN contacts c
+                   ON c.id = ct.contact_id
+                  AND c.tenant_id = ct.tenant_id
+                  AND c.deleted_at IS NULL
+            LEFT JOIN quotes q
+                   ON q.id = ct.quote_id
+                  AND q.tenant_id = ct.tenant_id
+                  AND q.deleted_at IS NULL
+            LEFT JOIN opportunities o
+                   ON o.id = ct.opportunity_id
+                  AND o.tenant_id = ct.tenant_id
+                  AND o.deleted_at IS NULL
+            WHERE ct.tenant_id = %s
+              AND ct.owner_user_id = %s
+              AND ct.deleted_at IS NULL
+            ORDER BY ct.updated_at DESC, ct.id DESC
+            LIMIT 500
+            """,
+            (tenant_id, user_id),
+        )
+        return cursor.fetchall()
+
+    return []
+
+
+def format_list_query_record(target: str, row: dict[str, Any]) -> str:
+    if target == "customers":
+        parts = (row.get("company_name"), row.get("contact_name"), row.get("title"), row.get("department"), row.get("mobile") or row.get("phone"), row.get("email"))
+    elif target == "opportunities":
+        parts = (row.get("name"), row.get("stage_name") or row.get("status"), row.get("company_name"), row.get("amount"), row.get("close_date"))
+    elif target == "calendar":
+        parts = (row.get("starts_at"), row.get("title"), row.get("status"), row.get("company_name"), row.get("location"))
+    elif target == "quotes":
+        parts = (row.get("quote_no"), row.get("title"), row.get("status"), row.get("company_name"), row.get("contact_name"), row.get("total_amount"))
+    elif target == "contracts":
+        parts = (row.get("contract_no"), row.get("title"), row.get("status"), row.get("company_name"), row.get("contact_name"), row.get("contract_amount"))
+    else:
+        parts = tuple(row.values())
+    return " / ".join(str(part) for part in parts if part not in (None, ""))
+
+
+def build_list_query_reply(target: str, records: list[dict[str, Any]], filters: dict[str, str]) -> str:
+    label = LIST_QUERY_TARGETS[target]["label"]
+    condition_text = list_query_condition_text(filters)
+    if not records:
+        return f"DB의 {label} 리스트에서 {condition_text} 조건에 해당하는 데이터는 없습니다."
+
+    lines = [f"DB의 {label} 리스트에서 {condition_text} 조건으로 {len(records)}건을 찾았습니다.", ""]
+    for index, row in enumerate(records[:10], start=1):
+        lines.append(f"{index}. {format_list_query_record(target, row)}")
+    if len(records) > 10:
+        lines.append(f"... 외 {len(records) - 10}건")
+    return "\n".join(lines)
+
+
+def handle_business_record_list_query(
+    session: dict[str, Any],
+    message: str,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    target = detect_list_query_target(message)
+    config = LIST_QUERY_TARGETS[target]
+    filters = extract_list_query_filters(target, message)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        rows = fetch_list_query_records(cursor, session, target, message)
+    filtered_rows = [row for row in rows if row_matches_list_filters(target, row, filters)]
+    records = admin_json_rows(filtered_rows)
+    record_audit_event(
+        session,
+        "list",
+        config["entity_type"],
+        None,
+        None,
+        {
+            "source": "agent_command",
+            "target": target,
+            "count": len(records),
+            "filters": filters,
+            "message_preview": message[:300],
+        },
+        request,
+    )
+    return {
+        "reply": build_list_query_reply(target, records, filters),
+        "target": target,
+        "target_menu": config["menu"],
+        "record_key": config["record_key"],
+        "filters": filters,
+        "count": len(records),
+        "records": records[:50],
+    }
+
+
 @app.get("/api/agent/command-cases")
 async def get_agent_command_cases(request: Request):
     session = require_session(request)
@@ -5122,6 +5473,28 @@ async def chat(chat_request: ChatRequest, request: Request):
             "pending_message": message,
             "candidates": admin_json_rows(customer_candidates),
         }
+
+    if command_route.case_id == "business_record_list_query":
+        try:
+            list_result = handle_business_record_list_query(session, message, request)
+            return {
+                "success": True,
+                "reply": list_result["reply"],
+                "db_list_query": True,
+                "target": list_result["target"],
+                "target_menu": list_result["target_menu"],
+                "record_key": list_result["record_key"],
+                "filters": list_result["filters"],
+                "count": list_result["count"],
+                "records": list_result["records"],
+            }
+        except HTTPException:
+            raise
+        except mysql.connector.Error as error:
+            return database_error_response(error, request)
+        except Exception as error:
+            print("Business record list query failed:", error)
+            return internal_error_response("업무 리스트를 DB에서 조회하는 중 오류가 발생했습니다.", request=request)
 
     social_links = extract_social_links(message)
     if command_route.case_id == "sns_profile_research":

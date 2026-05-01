@@ -423,6 +423,29 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 에이전트 화면 리스트 DB 조회 명령 추가
+
+변경 파일:
+- `agent_commands.py`
+- `main.py`
+- `script.js`
+- `docs/AGENT_COMMANDS.md`
+- `docs/PROJECT_GUIDE.md`
+- `README.md`
+- `tests/test_security_regressions.py`
+
+작업 내용:
+- `business_record_list_query` command case를 추가했습니다.
+- "고객 리스트", "파이프라인 리스트", "캘린더/영업활동 리스트", "견적 리스트", "계약 리스트" 표현을 일반 LLM 답변이 아니라 DB 조회 명령으로 라우팅합니다.
+- "고객 리스트 중에서 직위가 팀장인 고객 리스트 알려줘" 같은 요청에서 `직위=팀장` 조건을 추출해 현재 로그인 사용자의 고객 DB를 기준으로 필터링합니다.
+- 리스트 조회는 현재 세션의 `tenant_id`, `user_id`, `deleted_at IS NULL` 범위를 지킵니다.
+- 채팅 응답에는 `db_list_query`, `target_menu`, `count`, `records`를 포함하고, 프론트는 해당 메뉴를 자동으로 열어 조회 화면을 함께 보여줍니다.
+
+검증:
+- `.venv\Scripts\python.exe -m py_compile main.py database.py graph.py agent_commands.py tests\test_security_regressions.py`
+- `.venv\Scripts\python.exe -m unittest discover -s tests`
+- `node --check script.js`
+
 ### 2026-05-01: 에이전트 대화 명령 레지스트리 도입
 
 변경 파일:

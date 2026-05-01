@@ -361,6 +361,12 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(route.case_id, "sns_profile_research")
         self.assertTrue(route.requires_customer_preflight)
 
+    def test_agent_command_routes_business_record_list_query(self):
+        route = agent_commands.route_agent_command("고객 리스트 중에서 직위가 팀장인 고객 리스트 알려줘")
+
+        self.assertEqual(route.case_id, "business_record_list_query")
+        self.assertFalse(route.requires_customer_preflight)
+
     def test_agent_command_routes_sales_activity(self):
         route = agent_commands.route_agent_command("Acme Korea 김철수 내일 오후 2시 미팅 일정 등록해줘")
 
@@ -380,6 +386,23 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(case_ids[-1], "general_sales_agent")
         self.assertIn("sales_activity_schedule", case_ids)
         self.assertTrue(all(item["flow_steps"] for item in docs))
+
+    def test_business_record_list_query_extracts_customer_title_filter(self):
+        filters = main.extract_list_query_filters("customers", "고객 리스트 중에서 직위가 팀장인 고객 리스트 알려줘")
+
+        self.assertEqual(filters, {"직위": "팀장"})
+
+    def test_business_record_list_query_detects_screen_targets(self):
+        self.assertEqual(main.detect_list_query_target("파이프라인 리스트 보여줘"), "opportunities")
+        self.assertEqual(main.detect_list_query_target("캘린더 영업활동 목록 알려줘"), "calendar")
+        self.assertEqual(main.detect_list_query_target("견적 리스트 조회해줘"), "quotes")
+        self.assertEqual(main.detect_list_query_target("계약 리스트 조회해줘"), "contracts")
+
+    def test_business_record_list_query_filters_rows(self):
+        row = {"company_name": "Acme Korea", "contact_name": "Chris Park", "title": "팀장"}
+
+        self.assertTrue(main.row_matches_list_filters("customers", row, {"직위": "팀장"}))
+        self.assertFalse(main.row_matches_list_filters("customers", row, {"직위": "대표"}))
 
 
 if __name__ == "__main__":

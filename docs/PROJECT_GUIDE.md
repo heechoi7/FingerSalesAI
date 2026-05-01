@@ -537,11 +537,20 @@ FSAI_EXTRA_ENV_PATH=
 대화 명령 레지스트리:
 
 1. `/api/chat`은 메시지를 받은 뒤 `agent_commands.py`의 `route_agent_command()`로 command case를 먼저 결정합니다.
-2. 현재 command case는 `sns_profile_research`, `sales_activity_schedule`, `general_sales_agent`입니다.
+2. 현재 command case는 `business_record_list_query`, `sns_profile_research`, `sales_activity_schedule`, `general_sales_agent`입니다.
 3. 각 command case는 우선순위, matcher, 고객 선확인 필요 여부, 처리 플로우, 테스트 포인트를 코드에 함께 보관합니다.
 4. 라우팅 결과는 `audit_logs`에 `route / agent_command`로 기록합니다.
 5. 현재 등록된 케이스와 플로우는 `/api/agent/command-cases`에서 조회할 수 있습니다.
 6. 신규 대화 명령은 `/api/chat`에 조건문을 바로 추가하지 않고, 먼저 `agent_commands.py`와 `docs/AGENT_COMMANDS.md`에 케이스를 추가합니다.
+
+화면 리스트 DB 조회 명령:
+
+1. 사용자가 "고객 리스트", "파이프라인 리스트", "캘린더 리스트", "영업활동 목록", "견적 리스트", "계약 리스트"처럼 말하면 `business_record_list_query`로 라우팅합니다.
+2. 이 명령은 채팅 컨텍스트에 제공된 일부 목록이 아니라 해당 화면의 DB 조회 기준으로 처리합니다.
+3. 예를 들어 "고객 리스트 중에서 직위가 팀장인 고객 리스트 알려줘"는 고객 DB에서 `직위=팀장` 조건으로 필터링합니다.
+4. 조회 범위는 항상 현재 세션의 `tenant_id`, `user_id`, `deleted_at IS NULL` 기준입니다.
+5. 응답에는 `db_list_query=true`, `target_menu`, `count`, `records`를 포함합니다.
+6. `script.js`는 `target_menu`를 기준으로 고객, 파이프라인, 캘린더, 견적, 계약 메뉴를 열어 화면 조회 리스트도 함께 확인하게 합니다.
 
 명령 처리 전 고객 선확인:
 

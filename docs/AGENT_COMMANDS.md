@@ -26,11 +26,12 @@ main.py
 
 | case_id | 우선순위 | 핸들러 | 고객 선확인 | 목적 |
 | --- | ---: | --- | --- | --- |
+| `business_record_list_query` | 10 | `handle_business_record_list_query` | 아니오 | 고객, 파이프라인, 캘린더/영업활동, 견적, 계약 리스트 요청을 DB 기준으로 조회 |
 | `sns_profile_research` | 20 | `handle_sns_profile_research` | 예 | SNS 링크를 판별하고 공개 프로필 정보를 확인 |
 | `sales_activity_schedule` | 30 | `handle_sales_activity_schedule` | 예 | 영업활동 일정 등록, 취소, 변경, 반복, 조회 |
 | `general_sales_agent` | 1000 | `handle_general_sales_agent` | 예 | 분류되지 않은 일반 세일즈 대화, 검색, LLM 추론 |
 
-현재 `handler_name`은 관리용 이름이며, 실제 실행은 `/api/chat` 내부의 기존 SNS/일정/LLM 처리 블록으로 연결되어 있습니다. 다음 단계에서 핸들러 함수를 별도 모듈로 더 분리할 수 있습니다.
+현재 `handler_name`은 관리용 이름이며, 실제 실행은 `/api/chat` 내부의 DB 리스트/SNS/일정/LLM 처리 블록으로 연결되어 있습니다. 다음 단계에서 핸들러 함수를 별도 모듈로 더 분리할 수 있습니다.
 
 ## 라우팅 규칙
 
@@ -41,6 +42,30 @@ main.py
 5. 고객 후보가 여러 건이면 명령 실행을 멈추고 사용자에게 선택을 요청합니다.
 6. 고객 후보가 한 건이면 선택 고객 컨텍스트를 주입하고 같은 명령을 계속 처리합니다.
 7. 라우팅 결과는 `audit_logs`에 `route / agent_command`로 남깁니다.
+
+## 화면 리스트 조회 명령
+
+`business_record_list_query`는 아래 표현을 화면 컨텍스트가 아니라 DB 조회로 처리합니다.
+
+- 고객 리스트, 고객 목록, 고객 조회
+- 파이프라인 리스트, 영업기회 목록
+- 캘린더 리스트, 영업활동 목록, 일정 조회
+- 견적 리스트, 견적 목록
+- 계약 리스트, 계약 목록
+
+예시:
+
+```text
+고객 리스트 중에서 직위가 팀장인 고객 리스트 알려줘
+```
+
+처리 기준:
+
+- 현재 로그인 세션의 `tenant_id`, `user_id` 범위에서만 조회합니다.
+- `deleted_at IS NULL` 조건을 적용합니다.
+- 지원 조건은 대상별로 다릅니다. 예를 들어 고객은 직위, 직책, 직급, 부서, 회사명, 고객명, 이메일, 전화 조건을 해석합니다.
+- 결과 응답에는 `db_list_query=true`, `target_menu`, `count`, `records`가 포함됩니다.
+- 프론트는 `target_menu`를 기준으로 해당 메뉴를 열어 사용자가 화면 리스트도 함께 확인할 수 있게 합니다.
 
 ## 새 대화 명령 추가 절차
 
