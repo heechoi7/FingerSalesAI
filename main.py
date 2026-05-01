@@ -4699,7 +4699,7 @@ async def list_opportunities(
               AND (%s = '' OR o.name LIKE %s)
               AND (%s = '' OR o.status LIKE %s)
               AND (%s = '' OR a.name LIKE %s)
-            ORDER BY o.updated_at DESC, o.id DESC
+            ORDER BY o.created_at DESC, o.id DESC
             LIMIT %s
             """,
             (
@@ -4744,7 +4744,7 @@ async def list_calendar_events(
             SELECT
                 m.id, 'meeting' AS source_type, m.title, m.status,
                 m.started_at AS starts_at, m.ended_at AS ends_at,
-                m.location, a.name AS company_name
+                m.location, a.name AS company_name, NULL AS contact_name, NULL AS content, 'meeting' AS activity_type
             FROM meetings m
             LEFT JOIN accounts a
                    ON a.id = m.account_id
@@ -4765,12 +4765,16 @@ async def list_calendar_events(
             SELECT
                 a.id, 'activity' AS source_type, a.subject AS title, a.status,
                 a.due_at AS starts_at, a.completed_at AS ends_at,
-                a.activity_type AS location, ac.name AS company_name
+                a.activity_type AS location, a.activity_type, a.content, ac.name AS company_name, c.name AS contact_name
             FROM activities a
             LEFT JOIN accounts ac
                    ON ac.id = a.account_id
                   AND ac.tenant_id = a.tenant_id
                   AND ac.deleted_at IS NULL
+            LEFT JOIN contacts c
+                   ON c.id = a.contact_id
+                  AND c.tenant_id = a.tenant_id
+                  AND c.deleted_at IS NULL
             WHERE a.tenant_id = %s
               AND a.owner_user_id = %s
               AND a.deleted_at IS NULL
@@ -4786,7 +4790,7 @@ async def list_calendar_events(
             SELECT
                 ai.id, 'action_item' AS source_type, ai.title, ai.status,
                 ai.due_date AS starts_at, ai.completed_at AS ends_at,
-                ai.priority AS location, NULL AS company_name
+                ai.priority AS location, NULL AS company_name, NULL AS contact_name, NULL AS content, 'action_item' AS activity_type
             FROM action_items ai
             WHERE ai.tenant_id = %s
               AND (ai.assignee_user_id = %s OR ai.reporter_user_id = %s)
@@ -4854,7 +4858,7 @@ async def list_quotes(
               AND q.deleted_at IS NULL
               AND (%s = '' OR a.name LIKE %s)
               AND (%s = '' OR c.name LIKE %s)
-            ORDER BY q.updated_at DESC, q.id DESC
+            ORDER BY q.created_at DESC, q.id DESC
             LIMIT %s
             """,
             (
@@ -4936,7 +4940,7 @@ async def list_contracts(
               AND ct.deleted_at IS NULL
               AND (%s = '' OR a.name LIKE %s)
               AND (%s = '' OR c.name LIKE %s)
-            ORDER BY ct.updated_at DESC, ct.id DESC
+            ORDER BY ct.created_at DESC, ct.id DESC
             LIMIT %s
             """,
             (
@@ -5199,7 +5203,7 @@ def fetch_list_query_records(cursor, session: dict[str, Any], target: str, messa
             WHERE o.tenant_id = %s
               AND o.owner_user_id = %s
               AND o.deleted_at IS NULL
-            ORDER BY o.updated_at DESC, o.id DESC
+            ORDER BY o.created_at DESC, o.id DESC
             LIMIT 500
             """,
             (tenant_id, user_id),
@@ -5215,12 +5219,16 @@ def fetch_list_query_records(cursor, session: dict[str, Any], target: str, messa
             SELECT
                 a.id, 'activity' AS source_type, a.subject AS title, a.status,
                 a.due_at AS starts_at, a.completed_at AS ends_at,
-                a.activity_type AS location, ac.name AS company_name
+                a.activity_type AS location, a.activity_type, a.content, ac.name AS company_name, c.name AS contact_name
             FROM activities a
             LEFT JOIN accounts ac
                    ON ac.id = a.account_id
                   AND ac.tenant_id = a.tenant_id
                   AND ac.deleted_at IS NULL
+            LEFT JOIN contacts c
+                   ON c.id = a.contact_id
+                  AND c.tenant_id = a.tenant_id
+                  AND c.deleted_at IS NULL
             WHERE a.tenant_id = %s
               AND a.owner_user_id = %s
               AND a.deleted_at IS NULL
@@ -5258,7 +5266,7 @@ def fetch_list_query_records(cursor, session: dict[str, Any], target: str, messa
             WHERE q.tenant_id = %s
               AND q.owner_user_id = %s
               AND q.deleted_at IS NULL
-            ORDER BY q.updated_at DESC, q.id DESC
+            ORDER BY q.created_at DESC, q.id DESC
             LIMIT 500
             """,
             (tenant_id, user_id),
@@ -5295,7 +5303,7 @@ def fetch_list_query_records(cursor, session: dict[str, Any], target: str, messa
             WHERE ct.tenant_id = %s
               AND ct.owner_user_id = %s
               AND ct.deleted_at IS NULL
-            ORDER BY ct.updated_at DESC, ct.id DESC
+            ORDER BY ct.created_at DESC, ct.id DESC
             LIMIT 500
             """,
             (tenant_id, user_id),

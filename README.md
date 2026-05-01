@@ -423,6 +423,29 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 메뉴 진입 시 첫 데이터 자동 선택과 상세 항목 정리
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `styles.css`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 고객, 파이프라인, 견적, 계약 메뉴는 조회 결과의 첫 번째 행을 자동 선택하고 하단 상세 패널을 즉시 갱신하도록 했습니다.
+- 캘린더 메뉴는 진입 시 오늘 날짜를 선택하고 오늘 첫 번째 일정을 상세 패널에 표시합니다.
+- 에이전트가 영업활동 일정을 등록해 캘린더를 여는 경우 등록된 해당 활동을 자동 선택하고 상세 패널에 표시합니다.
+- 파이프라인, 견적, 계약 목록 정렬을 최신 등록 데이터가 위에 오도록 `created_at DESC, id DESC` 기준으로 맞췄습니다.
+- 캘린더 API가 하단 상세 패널에 필요한 고객명, 활동 유형, 활동 내용 정보를 함께 반환하도록 보강했습니다.
+- 메뉴별 상세 패널 항목을 요청한 항목 기준으로 정리했습니다.
+
+검증:
+- `node --check script.js`
+- `.venv\Scripts\python.exe -m py_compile main.py database.py graph.py agent_commands.py tests\test_security_regressions.py`
+- `.venv\Scripts\python.exe -m unittest discover -s tests`
+- `.venv\Scripts\python.exe -c "import main; print('app import ok')"`
+
 ### 2026-05-01: 좌측 패널 상하 분리와 65:35 스플리터 적용
 
 변경 파일:

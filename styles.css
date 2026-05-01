@@ -793,6 +793,11 @@ h3 {
   color: #fff;
 }
 
+.calendar-cell.selected {
+  background: #fff7f7;
+  box-shadow: inset 0 0 0 2px rgba(215, 53, 53, 0.24);
+}
+
 .calendar-day-number {
   margin-bottom: 5px;
   color: var(--charcoal);
@@ -820,6 +825,11 @@ h3 {
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
+}
+
+.calendar-event.selected {
+  background: var(--brand);
+  color: #fff;
 }
 
 .calendar-more {

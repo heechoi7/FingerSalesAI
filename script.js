@@ -445,16 +445,26 @@ function renderDataTable({ rows, columns, emptyMessage, onSelect }) {
   `;
 }
 
-function bindDataRows(rows, detailFactory) {
+function bindDataRows(rows, detailFactory, options = {}) {
+  const selectRow = (row) => {
+    document.querySelectorAll(".data-row.selected").forEach((item) => item.classList.remove("selected"));
+    row.classList.add("selected");
+    const item = rows[Number(row.dataset.rowIndex)];
+    const detail = detailFactory(item);
+    showDetail(detail.title, detail.rows);
+    if (options.scroll !== false) row.scrollIntoView({ block: "nearest" });
+  };
+
   document.querySelectorAll(".data-row").forEach((row) => {
-    row.addEventListener("click", () => {
-      document.querySelectorAll(".data-row.selected").forEach((item) => item.classList.remove("selected"));
-      row.classList.add("selected");
-      const item = rows[Number(row.dataset.rowIndex)];
-      const detail = detailFactory(item);
-      showDetail(detail.title, detail.rows);
-    });
+    row.addEventListener("click", () => selectRow(row));
   });
+
+  if (rows.length && options.autoSelect !== false) {
+    const firstRow = document.querySelector(".data-row");
+    if (firstRow) selectRow(firstRow);
+  } else if (!rows.length && options.autoSelect !== false) {
+    showDetail(options.emptyTitle || "상세 정보", [["상태", "조회된 데이터가 없습니다."]]);
+  }
 }
 
 function renderPipelineView(rows = []) {
@@ -486,14 +496,14 @@ function renderPipelineView(rows = []) {
   bindDataRows(rows, (row) => ({
     title: row.name || "영업기회 상세",
     rows: [
+      ["영업기회명", row.name],
       ["회사명", row.company_name],
       ["고객명", row.contact_name],
       ["상태", row.status],
       ["단계", row.stage_name || row.stage_code],
-      ["금액", formatAmount(row.amount, row.currency)],
       ["확률", row.probability_percent ? `${row.probability_percent}%` : "-"],
+      ["금액", formatAmount(row.amount, row.currency)],
       ["종료예정일", formatDateOnly(row.close_date)],
-      ["수정일", formatDateTime(row.updated_at)],
     ],
   }));
 }
@@ -535,14 +545,12 @@ function renderQuoteView(rows = []) {
     title: row.title || row.quote_no || "견적 상세",
     rows: [
       ["견적번호", row.quote_no],
+      ["견적일", formatDateOnly(row.created_at)],
+      ["견적명", row.title],
       ["회사명", row.company_name],
       ["고객명", row.contact_name],
       ["상태", row.status],
       ["금액", formatAmount(row.total_amount, row.currency)],
-      ["유효일", formatDateOnly(row.valid_until)],
-      ["발송일", formatDateTime(row.sent_at)],
-      ["영업기회", row.opportunity_name],
-      ["원본 파일", documentLinkValue(row)],
     ],
   }));
 }
@@ -584,16 +592,13 @@ function renderContractView(rows = []) {
     title: row.title || row.contract_no || "계약 상세",
     rows: [
       ["계약번호", row.contract_no],
+      ["계약명", row.title],
       ["회사명", row.company_name],
       ["고객명", row.contact_name],
       ["상태", row.status],
       ["금액", formatAmount(row.contract_amount, row.currency)],
       ["시작일", formatDateOnly(row.start_date)],
       ["종료일", formatDateOnly(row.end_date)],
-      ["서명일", formatDateTime(row.signed_at)],
-      ["견적번호", row.quote_no],
-      ["영업기회", row.opportunity_name],
-      ["원본 파일", documentLinkValue(row)],
     ],
   }));
 }
@@ -607,6 +612,7 @@ async function loadContracts() {
 }
 
 let calendarCursor = new Date();
+let pendingCalendarSelection = null;
 
 function eventDateKey(event) {
   const value = event.starts_at;
@@ -614,7 +620,35 @@ function eventDateKey(event) {
   return String(value).slice(0, 10);
 }
 
-function renderCalendarView(events = [], cursor = calendarCursor) {
+function calendarTodayKey() {
+  const today = new Date();
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+}
+
+function calendarEventMatchesSelection(event, selection) {
+  if (!event || !selection) return false;
+  const sameId = String(event.id || "") === String(selection.id || "");
+  const sameType = !selection.source_type || String(event.source_type || "") === String(selection.source_type);
+  return sameId && sameType;
+}
+
+function calendarDetailRows(item) {
+  return [
+    ["회사명", item.company_name],
+    ["고객명", item.contact_name],
+    ["활동 유형", item.activity_type || item.location || item.source_type],
+    ["활동 내용", item.content || item.title],
+    ["활동 상태", item.status],
+    ["예정 일시", formatDateTime(item.starts_at)],
+    ["완료 일시", formatDateTime(item.ends_at)],
+  ];
+}
+
+function showCalendarDetail(item) {
+  showDetail(item.title || "일정 상세", calendarDetailRows(item));
+}
+
+function renderCalendarView(events = [], cursor = calendarCursor, selection = pendingCalendarSelection) {
   const year = cursor.getFullYear();
   const month = cursor.getMonth();
   const first = new Date(year, month, 1);
@@ -656,12 +690,13 @@ function renderCalendarView(events = [], cursor = calendarCursor) {
             const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
             const dayEvents = byDate[key] || [];
             const muted = day.getMonth() !== month ? " muted" : "";
-            const today = new Date().toDateString() === day.toDateString() ? " today" : "";
+            const today = calendarTodayKey() === key ? " today" : "";
+            const selectedDate = selection?.date === key || (!selection && today) ? " selected" : "";
             return `
-              <div class="calendar-cell${muted}${today}" data-date="${key}">
+              <div class="calendar-cell${muted}${today}${selectedDate}" data-date="${key}">
                 <div class="calendar-day-number">${day.getDate()}</div>
                 <div class="calendar-events">
-                  ${dayEvents.slice(0, 4).map((event, eventIndex) => `<button type="button" class="calendar-event" data-event-date="${key}" data-event-index="${eventIndex}">${escapeHtml(event.title || event.source_type)}</button>`).join("")}
+                  ${dayEvents.slice(0, 4).map((event, eventIndex) => `<button type="button" class="calendar-event" data-event-date="${key}" data-event-index="${eventIndex}" data-event-id="${escapeHtml(event.id)}" data-source-type="${escapeHtml(event.source_type || "")}">${escapeHtml(event.title || event.source_type)}</button>`).join("")}
                   ${dayEvents.length > 4 ? `<span class="calendar-more">+${dayEvents.length - 4}</span>` : ""}
                 </div>
               </div>
@@ -688,17 +723,50 @@ function renderCalendarView(events = [], cursor = calendarCursor) {
   });
   document.querySelectorAll(".calendar-event").forEach((button) => {
     button.addEventListener("click", () => {
+      document.querySelectorAll(".calendar-cell.selected").forEach((item) => item.classList.remove("selected"));
+      document.querySelectorAll(".calendar-event.selected").forEach((item) => item.classList.remove("selected"));
+      button.closest(".calendar-cell")?.classList.add("selected");
+      button.classList.add("selected");
       const item = (byDate[button.dataset.eventDate] || [])[Number(button.dataset.eventIndex)];
-      showDetail(item.title || "일정 상세", [
-        ["유형", item.source_type],
-        ["상태", item.status],
-        ["일시", formatDateTime(item.starts_at)],
-        ["종료", formatDateTime(item.ends_at)],
-        ["회사명", item.company_name],
-        ["위치/분류", item.location],
-      ]);
+      pendingCalendarSelection = {
+        id: item?.id,
+        source_type: item?.source_type,
+        date: button.dataset.eventDate,
+      };
+      showCalendarDetail(item);
     });
   });
+
+  const todayKey = calendarTodayKey();
+  const selectedEvent = selection
+    ? events.find((event) => calendarEventMatchesSelection(event, selection))
+    : (byDate[todayKey] || [])[0];
+  const selectedDate = selectedEvent ? eventDateKey(selectedEvent) : selection?.date || todayKey;
+  document.querySelectorAll(".calendar-cell.selected").forEach((item) => item.classList.remove("selected"));
+  document.querySelector(`.calendar-cell[data-date="${selectedDate}"]`)?.classList.add("selected");
+  if (selectedEvent) {
+    const selectedButton = Array.from(document.querySelectorAll(".calendar-event")).find((button) => {
+      const event = (byDate[button.dataset.eventDate] || [])[Number(button.dataset.eventIndex)];
+      return calendarEventMatchesSelection(event, {
+        id: selectedEvent.id,
+        source_type: selectedEvent.source_type,
+      });
+    });
+    selectedButton?.classList.add("selected");
+    showCalendarDetail(selectedEvent);
+    pendingCalendarSelection = null;
+  } else {
+    showDetail("오늘 일정", [
+      ["회사명", "-"],
+      ["고객명", "-"],
+      ["활동 유형", "-"],
+      ["활동 내용", "오늘 날짜에 등록된 첫 일정이 없습니다."],
+      ["활동 상태", "-"],
+      ["예정 일시", selectedDate],
+      ["완료 일시", "-"],
+    ]);
+    pendingCalendarSelection = null;
+  }
 }
 
 async function loadCalendar() {
@@ -723,6 +791,9 @@ async function loadMenu(menu) {
       return;
     }
     if (menu === "calendar") {
+      if (!pendingCalendarSelection) {
+        calendarCursor = new Date();
+      }
       await loadCalendar();
       return;
     }
@@ -820,11 +891,10 @@ function addCustomerRow(data, source = "명함 인식", options = {}) {
     updateCustomerDetail(data, source, options.customer || null);
   });
   customerTableBody.append(row);
-  customerTableBody.querySelectorAll(".customer-row.selected").forEach((item) => item.classList.remove("selected"));
-  row.classList.add("selected");
-  row.scrollIntoView({ block: "nearest" });
-  setSelectedCustomer(data, source, options.customer || null);
-  updateCustomerDetail(data, source, options.customer || null);
+  if (options.autoSelect !== false) {
+    row.click();
+    row.scrollIntoView({ block: "nearest" });
+  }
 }
 
 function renderCustomerRows(customers) {
@@ -846,15 +916,15 @@ function renderCustomerRows(customers) {
   }));
 
   customers
-    .slice()
-    .reverse()
     .forEach((customer) => {
       addCustomerRow(customerToCardData(customer), customerSource(customer), {
         id: customer.id,
         createdAt: customer.created_at,
         customer,
+        autoSelect: false,
       });
     });
+  customerTableBody.querySelector(".customer-row")?.click();
 }
 
 async function loadCustomers() {
@@ -884,20 +954,13 @@ function updateCustomerDetail(data, source, customer = null) {
   }
 
   const detailRows = [
-    ["출처", source],
-    ["테넌트", customer?.tenant_id || "-"],
-    ["사용자 ID", customer?.owner_user_id || "-"],
-    ["고객사 ID", customer?.account_id || "-"],
-    ["연락처 ID", customer?.contact_id || customer?.id || "-"],
     ["회사", data["회사명"] || "-"],
-    ["담당자", data["이름"] || "-"],
+    ["이름", data["이름"] || "-"],
     ["직무/직위", [data["직무"], data["직위"]].filter(Boolean).join(" / ") || "-"],
-    ["연락처", data["휴대전화"] || "-"],
+    ["휴대전화", data["휴대전화"] || "-"],
     ["이메일", data["이메일"] || "-"],
-    ["홈페이지", data["홈페이지"] || "-"],
     ["주소", customer?.address || data["주소"] || "-"],
-    ["대표전화", customer?.account_phone || data["대표전화"] || "-"],
-    ["추가 정보", compactExtraInfo(data) || "-"],
+    ["홈페이지", data["홈페이지"] || "-"],
   ];
 
   customerDetailList.innerHTML = detailRows
@@ -1618,6 +1681,13 @@ async function requestChatReply(text, options = {}) {
         updatePlanStep(planSteps, "research", "done", 100, "영업활동 일정 관리 요청을 DB에 반영했습니다.");
         updatePlanStep(planSteps, "answer", "done", 100, "캘린더 메뉴를 열어 반영된 일정을 확인합니다.");
         calendarCursor = new Date(Number(result.calendar.year), Number(result.calendar.month) - 1, 1);
+        if (result.activity?.id) {
+          pendingCalendarSelection = {
+            id: result.activity.id,
+            source_type: "activity",
+            date: eventDateKey({ starts_at: result.activity.due_at || result.activity.starts_at }),
+          };
+        }
         activateMainMenu("calendar");
         await loadMenu("calendar");
         addLog("Schedule Agent", "영업활동 일정 관리 요청을 처리하고 캘린더를 열었습니다.", "done");
