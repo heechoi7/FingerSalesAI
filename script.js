@@ -432,6 +432,47 @@ function formatDashboardAmount(value) {
   return number.toLocaleString("ko-KR");
 }
 
+function homeMetricTone(key, index = 0) {
+  const tones = {
+    customers: "red",
+    pipeline: "blue",
+    activities: "green",
+    quotes: "amber",
+    contracts: "violet",
+  };
+  return tones[key] || ["red", "blue", "green", "amber", "violet"][index % 5];
+}
+
+function homeMetricIcon(key) {
+  const icons = {
+    customers: `<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />`,
+    pipeline: `<path d="M3 5h18" /><path d="M6 12h12" /><path d="M10 19h4" />`,
+    activities: `<path d="M8 2v4" /><path d="M16 2v4" /><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M3 10h18" /><path d="m9 16 2 2 4-4" />`,
+    quotes: `<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M8 13h8" /><path d="M8 17h6" />`,
+    contracts: `<path d="M12 3 3 7.5 12 12l9-4.5L12 3Z" /><path d="M3 12l9 4.5 9-4.5" /><path d="M3 16.5 12 21l9-4.5" />`,
+  };
+  return icons[key] || icons.pipeline;
+}
+
+function homeMetricBars(metric) {
+  const values = [metric.counts?.day || 0, metric.counts?.month || 0, metric.counts?.year || 0].map(Number);
+  const max = Math.max(...values, 1);
+  return values
+    .map((value, index) => {
+      const height = Math.max(14, Math.round((value / max) * 58));
+      const labels = ["일", "월", "년"];
+      return `<span class="home-mini-bar" style="--bar-height:${height}px"><i></i><b>${labels[index]}</b></span>`;
+    })
+    .join("");
+}
+
+function homeProgressPercent(metric) {
+  const month = Number(metric.counts?.month || 0);
+  const year = Number(metric.counts?.year || 0);
+  if (!year) return 0;
+  return Math.min(100, Math.round((month / year) * 100));
+}
+
 function setHomeMode(enabled) {
   leftPanel?.classList.toggle("home-mode", enabled);
   canvasArea?.classList.toggle("home-canvas", enabled);
@@ -443,26 +484,52 @@ function renderHomeView(data) {
   if (!canvasArea) return;
   const metrics = data?.metrics || [];
   const briefing = String(data?.briefing?.summary_text || "오늘 브리핑을 생성할 데이터가 아직 없습니다.");
+  const yearTotal = metrics.reduce((sum, metric) => sum + Number(metric.counts?.year || 0), 0);
   canvasArea.innerHTML = `
     <div class="home-view">
       <section class="home-section home-metrics-section" aria-label="홈 대시보드 수치">
-        <div class="home-section-title">
-          <h2>오늘의 영업 현황</h2>
-          <span>${escapeHtml(data?.date || "")}</span>
+        <div class="home-dashboard-head">
+          <div>
+            <h2>오늘의 영업 현황</h2>
+            <p>핵심 업무 흐름을 일, 월, 년 단위로 압축해서 보여줍니다.</p>
+          </div>
+          <div class="home-dashboard-total">
+            <span>${escapeHtml(data?.date || "")}</span>
+            <strong>${escapeHtml(formatPlainNumber(yearTotal))}</strong>
+            <em>올해 누적 건수</em>
+          </div>
         </div>
         <div class="home-metric-grid">
           ${metrics
-            .map((metric) => {
-              const amount = metric.amounts?.month ? `<small>월 금액 ${escapeHtml(formatDashboardAmount(metric.amounts.month))}</small>` : "";
+            .map((metric, index) => {
+              const tone = homeMetricTone(metric.key, index);
+              const amount = metric.amounts?.month ? `<span class="home-amount-chip">월 금액 ${escapeHtml(formatDashboardAmount(metric.amounts.month))}</span>` : "";
+              const progress = homeProgressPercent(metric);
               return `
-                <article class="home-metric-card">
-                  <strong>${escapeHtml(metric.label)}</strong>
-                  <div class="home-metric-periods">
-                    <span><em>일</em>${escapeHtml(formatPlainNumber(metric.counts?.day))}</span>
-                    <span><em>월</em>${escapeHtml(formatPlainNumber(metric.counts?.month))}</span>
-                    <span><em>년</em>${escapeHtml(formatPlainNumber(metric.counts?.year))}</span>
+                <article class="home-metric-card tone-${escapeHtml(tone)}">
+                  <div class="home-card-top">
+                    <span class="home-card-icon">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">${homeMetricIcon(metric.key)}</svg>
+                    </span>
+                    <strong>${escapeHtml(metric.label)}</strong>
                   </div>
-                  ${amount}
+                  <div class="home-card-focus">
+                    <span>${escapeHtml(formatPlainNumber(metric.counts?.year))}</span>
+                    <em>올해 누적</em>
+                  </div>
+                  <div class="home-metric-periods">
+                    <span><em>일</em><b>${escapeHtml(formatPlainNumber(metric.counts?.day))}</b></span>
+                    <span><em>월</em><b>${escapeHtml(formatPlainNumber(metric.counts?.month))}</b></span>
+                    <span><em>년</em><b>${escapeHtml(formatPlainNumber(metric.counts?.year))}</b></span>
+                  </div>
+                  <div class="home-mini-chart" aria-hidden="true">${homeMetricBars(metric)}</div>
+                  <div class="home-progress-line">
+                    <span style="width:${progress}%"></span>
+                  </div>
+                  <div class="home-card-foot">
+                    <small>월/년 비중 ${progress}%</small>
+                    ${amount}
+                  </div>
                 </article>
               `;
             })
