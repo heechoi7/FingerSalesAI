@@ -7,6 +7,7 @@
 1. `README.md`: 지금까지의 작업 이력과 실행/검증 기록
 2. `docs/PROJECT_GUIDE.md`: 프로젝트 구조와 기능/업무 흐름
 3. `docs/HANDOFF_WORKFLOW.md`: 장비 이동, 팀 협업, Codex 작업 인수인계 규칙
+4. `docs/AGENT_COMMANDS.md`: 에이전트 대화 명령 케이스와 신규 명령 추가 규칙
 
 새로운 작업을 하면 `README.md`의 변경 이력과 이 문서의 관련 섹션을 함께 갱신합니다.
 
@@ -533,16 +534,25 @@ FSAI_EXTRA_ENV_PATH=
 - Tavily 검색 기반 답변
 - 최근 대화/고객 컨텍스트 전달
 
+대화 명령 레지스트리:
+
+1. `/api/chat`은 메시지를 받은 뒤 `agent_commands.py`의 `route_agent_command()`로 command case를 먼저 결정합니다.
+2. 현재 command case는 `sns_profile_research`, `sales_activity_schedule`, `general_sales_agent`입니다.
+3. 각 command case는 우선순위, matcher, 고객 선확인 필요 여부, 처리 플로우, 테스트 포인트를 코드에 함께 보관합니다.
+4. 라우팅 결과는 `audit_logs`에 `route / agent_command`로 기록합니다.
+5. 현재 등록된 케이스와 플로우는 `/api/agent/command-cases`에서 조회할 수 있습니다.
+6. 신규 대화 명령은 `/api/chat`에 조건문을 바로 추가하지 않고, 먼저 `agent_commands.py`와 `docs/AGENT_COMMANDS.md`에 케이스를 추가합니다.
+
 명령 처리 전 고객 선확인:
 
 1. 사용자가 에이전트 입력창에 회사명 또는 고객명을 포함해 명령을 입력합니다.
 2. `script.js`는 메시지와 현재 `selectedCustomer`, 최근 카드, 최근 대화 기록을 `/api/chat`에 전달합니다.
-3. `main.py`의 `/api/chat`은 SNS, 일정, LLM 처리보다 먼저 `resolve_command_customer_preflight()`를 실행합니다.
+3. `main.py`의 `/api/chat`은 command case를 먼저 라우팅한 뒤, 해당 케이스가 `requires_customer_preflight=true`이면 `resolve_command_customer_preflight()`를 실행합니다.
 4. 고객 후보 조회는 `contacts.tenant_id = session.tenant_id`, `contacts.owner_user_id = session.user_id`, `contacts.deleted_at IS NULL`, `accounts.deleted_at IS NULL` 범위에서만 수행합니다.
 5. 회사명 또는 고객명 매칭 후보가 1건이면 서버가 해당 고객을 `selectedCustomer` 컨텍스트에 자동 주입하고 원래 명령을 계속 처리합니다.
 6. 후보가 여러 건이면 서버가 `customer_selection_required=true`, `pending_message`, `candidates`를 반환합니다.
 7. 프론트는 후보 버튼을 채팅창에 표시하고, 사용자가 선택하면 그 고객을 `memory.selectedCustomer`와 상세 패널에 반영한 뒤 같은 명령을 다시 호출합니다.
-8. 이 흐름은 `/api/chat`에 들어오는 모든 명령의 공통 전처리이며, 앞으로 새 명령을 추가할 때도 이 전처리 뒤에 붙입니다.
+8. 고객이나 회사 대상 업무를 수행하는 신규 명령은 반드시 `requires_customer_preflight=true`로 등록합니다.
 
 채팅 컨텍스트 우선순위:
 

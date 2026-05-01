@@ -6,6 +6,7 @@
 
 - `docs/PROJECT_GUIDE.md`: 프레임워크, DB 구성, 메뉴 구성, 상세 로직, 공통 코드, 보안/역할, 운영 기준
 - `docs/HANDOFF_WORKFLOW.md`: Windows/Mac 작업 연속성, 팀 협업, 다른 Codex 인수인계 절차
+- `docs/AGENT_COMMANDS.md`: 에이전트 대화창 명령 케이스 레지스트리와 신규 명령 추가 절차
 - `README.md`: 지금까지의 변경 이력, 검증 명령, 남은 작업
 
 작업 후에는 `README.md`의 변경 이력과 관련 `docs/` 문서를 함께 갱신합니다.
@@ -421,6 +422,29 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 에이전트 대화 명령 레지스트리 도입
+
+변경 파일:
+- `agent_commands.py`
+- `main.py`
+- `docs/AGENT_COMMANDS.md`
+- `docs/PROJECT_GUIDE.md`
+- `README.md`
+- `tests/test_security_regressions.py`
+
+작업 내용:
+- 에이전트 대화창에서 처리되는 업무 명령을 `AgentCommandCase` 단위로 관리하는 `agent_commands.py`를 추가했습니다.
+- `/api/chat`은 메시지를 먼저 `route_agent_command()`로 분류한 뒤 SNS 프로필 리서치, 영업활동 일정 관리, 일반 LLM 대화로 분기합니다.
+- command case에는 `case_id`, 우선순위, matcher, 고객 선확인 필요 여부, 처리 플로우, 테스트 포인트를 함께 기록합니다.
+- `/api/agent/command-cases` API를 추가해 현재 등록된 대화 명령 케이스와 플로우를 조회할 수 있게 했습니다.
+- 라우팅 결과를 `audit_logs`에 `route / agent_command`로 기록해 어떤 대화 명령이 사용되는지 추적할 수 있게 했습니다.
+- 신규 대화 명령 추가 절차와 충돌 방지 기준을 `docs/AGENT_COMMANDS.md`에 문서화했습니다.
+
+검증:
+- `.venv\Scripts\python.exe -m py_compile main.py database.py graph.py agent_commands.py tests\test_security_regressions.py`
+- `.venv\Scripts\python.exe -m unittest discover -s tests`
+- `node --check script.js`
 
 ### 2026-05-01: DB/시스템 에러 응답 코드와 예외 처리 강화
 

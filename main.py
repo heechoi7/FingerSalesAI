@@ -30,6 +30,7 @@ from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from agent_commands import command_cases_for_docs, route_agent_command
 from database import contact_row_to_customer, db_connection, init_db, none_if_blank, resolve_tenant_id
 
 
@@ -5022,6 +5023,22 @@ async def delete_customer(customer_id: int, request: Request):
     return {"success": True}
 
 
+@app.get("/api/agent/command-cases")
+async def get_agent_command_cases(request: Request):
+    session = require_session(request)
+    command_cases = command_cases_for_docs()
+    record_audit_event(
+        session,
+        "list",
+        "agent_command_cases",
+        None,
+        None,
+        {"count": len(command_cases)},
+        request,
+    )
+    return {"success": True, "command_cases": command_cases}
+
+
 @app.post("/api/chat")
 async def chat(chat_request: ChatRequest, request: Request):
     session = require_session(request)
@@ -5030,24 +5047,26 @@ async def chat(chat_request: ChatRequest, request: Request):
         raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
 
     effective_context = chat_request.context if isinstance(chat_request.context, dict) else {}
+    command_route = route_agent_command(message)
     resolved_customer = None
     customer_candidates: list[dict[str, Any]] = []
-    try:
-        with db_connection() as connection:
-            cursor = connection.cursor(dictionary=True)
-            effective_context, customer_candidates, resolved_customer = resolve_command_customer_preflight(
-                cursor,
-                session,
-                message,
-                effective_context,
-            )
-    except HTTPException:
-        raise
-    except mysql.connector.Error as error:
-        return database_error_response(error, request)
-    except Exception as error:
-        print("Customer command preflight failed:", error)
-        return internal_error_response("고객 정보를 먼저 확인하는 중 오류가 발생했습니다.", request=request)
+    if command_route.requires_customer_preflight:
+        try:
+            with db_connection() as connection:
+                cursor = connection.cursor(dictionary=True)
+                effective_context, customer_candidates, resolved_customer = resolve_command_customer_preflight(
+                    cursor,
+                    session,
+                    message,
+                    effective_context,
+                )
+        except HTTPException:
+            raise
+        except mysql.connector.Error as error:
+            return database_error_response(error, request)
+        except Exception as error:
+            print("Customer command preflight failed:", error)
+            return internal_error_response("고객 정보를 먼저 확인하는 중 오류가 발생했습니다.", request=request)
 
     selected_customer = effective_context.get("selectedCustomer") if isinstance(effective_context, dict) else None
     selected_customer_id = (
@@ -5061,7 +5080,28 @@ async def chat(chat_request: ChatRequest, request: Request):
         "agent",
         selected_customer_id,
         None,
-        {"message_preview": message[:300], "selected_customer_id": selected_customer_id},
+        {
+            "message_preview": message[:300],
+            "selected_customer_id": selected_customer_id,
+            "command_case_id": command_route.case_id,
+            "command_handler": command_route.handler_name,
+        },
+        request,
+    )
+    record_audit_event(
+        session,
+        "route",
+        "agent_command",
+        selected_customer_id,
+        None,
+        {
+            "message_preview": message[:300],
+            "case_id": command_route.case_id,
+            "title": command_route.title,
+            "handler_name": command_route.handler_name,
+            "matched": command_route.matched,
+            "requires_customer_preflight": command_route.requires_customer_preflight,
+        },
         request,
     )
 
@@ -5084,7 +5124,7 @@ async def chat(chat_request: ChatRequest, request: Request):
         }
 
     social_links = extract_social_links(message)
-    if social_links:
+    if command_route.case_id == "sns_profile_research":
         if len(social_links) > MAX_SNS_LINKS_PER_REQUEST:
             raise HTTPException(status_code=400, detail=f"SNS 링크는 한 번에 최대 {MAX_SNS_LINKS_PER_REQUEST}개까지 확인할 수 있습니다.")
         try:
@@ -5118,7 +5158,7 @@ async def chat(chat_request: ChatRequest, request: Request):
             print("SNS chat inspection failed:", error)
             return internal_error_response("SNS 링크 정보를 확인하는 중 오류가 발생했습니다.", request=request)
 
-    if is_sales_activity_schedule_request(message):
+    if command_route.case_id == "sales_activity_schedule":
         try:
             activity_result = manage_sales_activity_from_message(session, message, effective_context, request)
             return {

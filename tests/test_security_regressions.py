@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import database
+import agent_commands
 import main
 import mysql.connector
 import json
@@ -353,6 +354,32 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertFalse(body["success"])
         self.assertEqual(body["error_code"], "FSI-SYSTEM-ERROR")
         self.assertIn("request_id", body)
+
+    def test_agent_command_routes_sns_before_llm(self):
+        route = agent_commands.route_agent_command("https://www.linkedin.com/in/hyundohbak/ 확인해줘")
+
+        self.assertEqual(route.case_id, "sns_profile_research")
+        self.assertTrue(route.requires_customer_preflight)
+
+    def test_agent_command_routes_sales_activity(self):
+        route = agent_commands.route_agent_command("Acme Korea 김철수 내일 오후 2시 미팅 일정 등록해줘")
+
+        self.assertEqual(route.case_id, "sales_activity_schedule")
+        self.assertTrue(route.requires_customer_preflight)
+
+    def test_agent_command_fallback_is_last(self):
+        route = agent_commands.route_agent_command("이번 분기 영업 전략을 정리해줘")
+
+        self.assertEqual(route.case_id, "general_sales_agent")
+        self.assertTrue(route.requires_customer_preflight)
+
+    def test_agent_command_docs_include_flow_steps(self):
+        docs = agent_commands.command_cases_for_docs()
+        case_ids = [item["case_id"] for item in docs]
+
+        self.assertEqual(case_ids[-1], "general_sales_agent")
+        self.assertIn("sales_activity_schedule", case_ids)
+        self.assertTrue(all(item["flow_steps"] for item in docs))
 
 
 if __name__ == "__main__":
