@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from database import contact_row_to_customer, db_connection, init_db, none_if_blank, resolve_tenant_id
 
@@ -111,6 +111,16 @@ class ChatRequest(BaseModel):
 
 class SnsLinksRequest(BaseModel):
     message: str
+
+
+class SocialProfileScreenshotInfo(BaseModel):
+    is_social_profile: bool = Field(description="True only if the image is a social network profile screen.")
+    platform: str = Field(default="", description="Visible SNS platform name such as Facebook, LinkedIn, Instagram, X.")
+    display_name: str = Field(default="", description="Exact visible main profile person name. Empty if not visible.")
+    headline: str = Field(default="", description="Visible role, headline, or short intro. Empty if not visible.")
+    company_name: str = Field(default="", description="Visible current company or organization. Empty if not visible.")
+    profile_url: str = Field(default="", description="Visible profile URL if shown in the screenshot. Empty if not visible.")
+    summary: str = Field(default="", description="Short Korean summary of only visible profile facts.")
 
 
 class LoginRequest(BaseModel):
@@ -670,6 +680,10 @@ def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
         else:
             extracted["contact_name"] = authoritative_metadata_name
 
+    name_verified = bool(authoritative_metadata_name)
+    if link.get("entity_type") in {"person", "profile"} and not name_verified:
+        extracted["contact_name"] = ""
+
     enriched = {
         "contact_name": str(extracted.get("contact_name") or "").strip(),
         "company_name": str(extracted.get("company_name") or "").strip(),
@@ -678,14 +692,62 @@ def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
         "email": str(extracted.get("email") or "").strip(),
         "summary": str(extracted.get("summary") or "").strip(),
         "briefing": str(extracted.get("briefing") or "").strip(),
+        "name_verified": name_verified,
+        "name_source": "public_profile_metadata" if name_verified else "",
         "public_metadata": public_metadata,
         "search_results": search_results,
     }
     return {**link, "enriched": enriched}
 
 
+def social_link_needs_name_confirmation(link: dict[str, Any], enriched: dict[str, Any]) -> bool:
+    if link.get("entity_type") not in {"person", "profile"}:
+        return False
+    return not enriched.get("name_verified") or not str(enriched.get("contact_name") or "").strip()
+
+
+def build_sns_confirmation_item(link: dict[str, Any], enriched_link: dict[str, Any]) -> dict[str, Any]:
+    enriched = enriched_link.get("enriched", {})
+    metadata = enriched.get("public_metadata") or {}
+    reason = (
+        f"{link['platform']} 링크에서 공개 프로필 이름을 확정하지 못했습니다. "
+        "검색/AI 결과만으로는 다른 사람 정보가 섞일 수 있어 고객으로 저장하지 않았습니다. "
+        "프로필 화면 캡처를 업로드하거나 이름을 직접 확인해 주세요."
+    )
+    return {
+        "platform": link["platform"],
+        "entity_type": link["entity_type"],
+        "url": link["url"],
+        "saved": False,
+        "needs_confirmation": True,
+        "reason": reason,
+        "data": {
+            "회사명": "",
+            "이름": "",
+            "직무": "SNS 프로필 이름 확인 필요",
+            "직위": link["platform"],
+            "휴대전화": "",
+            "이메일": "",
+            "홈페이지": link["url"],
+            "SNS종류": link["platform"],
+            "SNS대상": link["entity_type"],
+            "SNS핸들": link.get("handle") or link.get("display_name") or "",
+            "SNS링크": link["url"],
+            "SNS요약": reason,
+        },
+        "briefing": reason,
+        "enriched": enriched,
+        "public_metadata": metadata,
+        "customer": None,
+    }
+
+
 def save_sns_customer(link: dict[str, Any], tenant_id: int, owner_user_id: int) -> dict[str, Any]:
     enriched_link = enrich_social_link(link)
+    enriched = enriched_link.get("enriched", {})
+    if social_link_needs_name_confirmation(link, enriched):
+        return build_sns_confirmation_item(link, enriched_link)
+
     data = social_link_to_card_data(enriched_link)
     briefing = enriched_link.get("enriched", {}).get("briefing") or f"{link['platform']} 링크에서 생성한 SNS 기반 고객 후보입니다."
     customer = save_extracted_customer(
@@ -699,6 +761,8 @@ def save_sns_customer(link: dict[str, Any], tenant_id: int, owner_user_id: int) 
         "platform": link["platform"],
         "entity_type": link["entity_type"],
         "url": link["url"],
+        "saved": True,
+        "needs_confirmation": False,
         "data": data,
         "briefing": briefing,
         "enriched": enriched_link.get("enriched", {}),
@@ -706,22 +770,99 @@ def save_sns_customer(link: dict[str, Any], tenant_id: int, owner_user_id: int) 
     }
 
 
+def extract_social_profile_screenshot(contents: bytes) -> dict[str, Any]:
+    model = create_gemini_model(temperature=0).with_structured_output(SocialProfileScreenshotInfo)
+    image_b64 = base64.b64encode(contents).decode("utf-8")
+    prompt = """
+    You extract only visible facts from a screenshot of a social profile page.
+    Decide whether the image is an SNS/social profile screen.
+    If it is, extract the exact visible main profile person name as display_name.
+    Do not infer a name from account handles, comments, search results, or surrounding UI.
+    If the profile person's name is not clearly visible, return display_name as an empty string.
+    Use Korean for summary and include only facts visible in the screenshot.
+    """
+    message = HumanMessage(
+        content=[
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+        ]
+    )
+    response: SocialProfileScreenshotInfo = model.invoke([message])
+    return response.model_dump()
+
+
+def save_social_profile_screenshot_customer(
+    info: dict[str, Any],
+    source_file: str,
+    tenant_id: int,
+    owner_user_id: int,
+) -> dict[str, Any] | None:
+    display_name = str(info.get("display_name") or "").strip()
+    if not display_name:
+        return None
+
+    platform = str(info.get("platform") or "SNS").strip()
+    company_name = str(info.get("company_name") or "").strip() or display_name
+    headline = str(info.get("headline") or "").strip()
+    profile_url = str(info.get("profile_url") or "").strip()
+    summary = str(info.get("summary") or "").strip()
+    data = {
+        "회사명": company_name,
+        "이름": display_name,
+        "직무": headline or "SNS 프로필 화면 캡처",
+        "직위": platform,
+        "휴대전화": "",
+        "이메일": "",
+        "홈페이지": profile_url,
+        "SNS종류": platform,
+        "SNS대상": "profile_screenshot",
+        "SNS핸들": "",
+        "SNS링크": profile_url,
+        "SNS요약": summary,
+    }
+    briefing = summary or f"{platform} 프로필 화면 캡처에서 '{display_name}' 이름을 확인했습니다."
+    return save_extracted_customer(
+        data,
+        briefing,
+        f"SNS 프로필 캡처 · {source_file}",
+        tenant_id,
+        owner_user_id,
+    )
+
+
 def build_sns_import_reply(items: list[dict[str, Any]]) -> str:
-    lines = ["SNS 링크를 분석해 고객 정보로 저장했습니다."]
+    saved_items = [item for item in items if item.get("saved")]
+    pending_items = [item for item in items if item.get("needs_confirmation")]
+    if saved_items and pending_items:
+        lines = ["SNS 링크를 분석해 이름이 확인된 항목은 저장했고, 이름을 확정하지 못한 항목은 저장하지 않았습니다."]
+    elif saved_items:
+        lines = ["SNS 링크를 분석해 고객 정보로 저장했습니다."]
+    else:
+        lines = ["SNS 링크에서 프로필 이름을 확정하지 못해 고객 정보로 저장하지 않았습니다."]
+
     for item in items:
         data = item.get("data") or {}
         name = data.get("이름") or "-"
         company = data.get("회사명") or "-"
         role = " / ".join(value for value in [data.get("직무"), data.get("직위")] if value) or "-"
-        lines.extend(
-            [
-                "",
-                f"• 고객: {company} / {name}",
-                f"• 역할: {role}",
-                f"• SNS: {item.get('platform')} ({item.get('url')})",
-            ]
-        )
-        if item.get("briefing"):
+        if item.get("saved"):
+            lines.extend(
+                [
+                    "",
+                    f"• 저장 완료: {company} / {name}",
+                    f"• 역할: {role}",
+                    f"• SNS: {item.get('platform')} ({item.get('url')})",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    f"• 확인 필요: {item.get('platform')} ({item.get('url')})",
+                    f"• 사유: {item.get('reason') or '공개 프로필 이름을 확정하지 못했습니다.'}",
+                ]
+            )
+        if item.get("saved") and item.get("briefing"):
             lines.extend(["", item["briefing"]])
     return "\n".join(lines)
 
@@ -1135,9 +1276,46 @@ async def extract_business_card(
                 "skip_briefing": skip_briefing,
             }
         )
+        if not result.get("is_business_card", False):
+            try:
+                social_profile = extract_social_profile_screenshot(contents)
+            except Exception as error:
+                print("SNS profile screenshot extraction failed:", error)
+                social_profile = {"is_social_profile": False, "display_name": ""}
+
+            if social_profile.get("is_social_profile") and str(social_profile.get("display_name") or "").strip():
+                customer = save_social_profile_screenshot_customer(
+                    social_profile,
+                    file.filename or "",
+                    session["tenant_id"],
+                    session["user_id"],
+                )
+                return {
+                    "success": True,
+                    "is_business_card": False,
+                    "is_social_profile": True,
+                    "data": {
+                        "회사명": social_profile.get("company_name") or social_profile.get("display_name") or "",
+                        "이름": social_profile.get("display_name") or "",
+                        "직무": social_profile.get("headline") or "SNS 프로필 화면 캡처",
+                        "직위": social_profile.get("platform") or "SNS",
+                        "휴대전화": "",
+                        "이메일": "",
+                        "홈페이지": social_profile.get("profile_url") or "",
+                        "SNS종류": social_profile.get("platform") or "SNS",
+                        "SNS대상": "profile_screenshot",
+                        "SNS링크": social_profile.get("profile_url") or "",
+                        "SNS요약": social_profile.get("summary") or "",
+                    },
+                    "briefing": social_profile.get("summary") or "",
+                    "customer": customer,
+                    "social_profile": social_profile,
+                }
+
         return {
             "success": True,
             "is_business_card": result.get("is_business_card", False),
+            "is_social_profile": False,
             "data": result.get("card_info", {}),
             "briefing": result.get("company_briefing", ""),
             "customer": save_extracted_customer(
@@ -1164,7 +1342,9 @@ async def extract_sns_links(payload: SnsLinksRequest, request: Request):
 
     try:
         items = [save_sns_customer(link, session["tenant_id"], session["user_id"]) for link in links]
-        return {"success": True, "count": len(items), "items": items}
+        saved_count = sum(1 for item in items if item.get("saved"))
+        pending_count = sum(1 for item in items if item.get("needs_confirmation"))
+        return {"success": True, "count": saved_count, "pending_count": pending_count, "items": items}
     except Exception as error:
         print("SNS extraction failed:", error)
         return {"success": False, "error": str(error)}
@@ -1297,10 +1477,14 @@ async def chat(chat_request: ChatRequest, request: Request):
     if social_links:
         try:
             items = [save_sns_customer(link, session["tenant_id"], session["user_id"]) for link in social_links]
+            saved_count = sum(1 for item in items if item.get("saved"))
+            pending_count = sum(1 for item in items if item.get("needs_confirmation"))
             return {
                 "success": True,
                 "reply": build_sns_import_reply(items),
                 "sns_imported": True,
+                "count": saved_count,
+                "pending_count": pending_count,
                 "items": items,
             }
         except Exception as error:

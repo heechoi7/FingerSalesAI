@@ -719,6 +719,29 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 - `social_profile_name_from_metadata({'og_title': '박광영 | Facebook'}, 'Facebook')` 수동 호출로 `박광영` 추출 확인
 - 공개 메타데이터 이름과 AI 결과가 충돌하는 단위 테스트에서 잘못된 회사/이메일이 제거되는 것 확인
 
+### 2026-05-01: SNS 프로필 이름 정확도 우선 저장 정책 적용
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- SNS 개인/프로필 링크는 검색 결과나 AI 추론만으로 `이름`을 확정하지 않도록 변경했습니다.
+- 공개 프로필 메타데이터에서 이름을 확정하지 못하면 `accounts`/`contacts`에 저장하지 않고 `이름 확인 필요` 결과로 응답합니다.
+- 프론트는 이름 확인이 필요한 SNS 항목을 고객 그리드에 추가하지 않고, 확인 필요 사유를 채팅창에 표시합니다.
+- 일반 `/api/chat` fallback으로 SNS 링크가 들어와도 저장 완료 항목만 고객 그리드에 반영합니다.
+- 명함 이미지가 아니더라도 SNS 프로필 화면 캡처로 판단되고 화면에 보이는 이름이 있으면, 해당 이름을 직접 근거로 고객 저장하도록 업로드 흐름을 확장했습니다.
+- SNS 프로필 화면 캡처에서도 이름이 보이지 않으면 저장하지 않습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- 공개 메타데이터 이름이 없는 Facebook 링크 단위 테스트에서 `saved=False`, `needs_confirmation=True`, `customer=None` 확인
+- 공개 메타데이터 이름이 있는 경우 `contact_name=박광영`, `name_verified=True`, 충돌한 회사/이메일 제거 확인
+
 ### 2026-05-01: 클라우드 SaaS 운영 기준 보안/안정성 보강
 
 변경 파일:

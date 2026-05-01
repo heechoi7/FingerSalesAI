@@ -711,20 +711,27 @@ function buildCardInfoHtml(data) {
 }
 
 function buildSnsImportHtml(items) {
+  const savedItems = (items || []).filter((item) => item.saved);
+  const pendingItems = (items || []).filter((item) => item.needs_confirmation);
   const rows = (items || [])
     .map((item) => {
       const data = item.data || {};
+      const status = item.saved ? "저장 완료" : "이름 확인 필요";
       const label = `${item.platform || "SNS"} · ${data["회사명"] || data["이름"] || item.url}`;
       return `
         <li>
-          <strong>${escapeHtml(label)}</strong>
-          <span>${escapeHtml(item.url || data["홈페이지"] || "-")}</span>
+          <strong>${escapeHtml(status)} · ${escapeHtml(label)}</strong>
+          <span>${escapeHtml(item.reason || item.url || data["홈페이지"] || "-")}</span>
         </li>
       `;
     })
     .join("");
 
-  return `<p>SNS 링크를 고객 후보로 정리해 저장했습니다.</p><ul class="card-result-list">${rows}</ul>`;
+  const summary =
+    pendingItems.length > 0
+      ? `SNS 링크를 확인했습니다. 이름이 확인된 ${savedItems.length}건은 저장했고, ${pendingItems.length}건은 프로필 이름을 확정하지 못해 저장하지 않았습니다.`
+      : `SNS 링크 ${savedItems.length}건을 고객 정보로 저장했습니다.`;
+  return `<p>${escapeHtml(summary)}</p><ul class="card-result-list">${rows}</ul>`;
 }
 
 function buildBriefingHtml(briefing) {
@@ -768,9 +775,29 @@ async function analyzeBusinessCard(file, imageUrl, options = {}) {
 
     loadingMessage.remove();
 
+    if (!result.is_business_card && result.is_social_profile) {
+      const company = result.data?.["회사명"] || "회사명 미확인";
+      const name = result.data?.["이름"] || "이름 미확인";
+      updatePlanStep(planSteps, "vision", "done", 100, `${name} 프로필 이름을 화면 캡처에서 확인했습니다.`);
+      updatePlanStep(planSteps, "research", "done", 100, "검색 결과가 아닌 화면에 보이는 이름을 직접 근거로 사용했습니다.");
+      updatePlanStep(planSteps, "briefing", "done", 100, "SNS 프로필 화면 캡처 기반 고객 정보를 저장했습니다.");
+      appendMessage("ai", buildCardInfoHtml(result.data || {}), { html: true });
+      if (result.briefing) {
+        appendMessage("ai", buildBriefingHtml(result.briefing), { html: true });
+      }
+      rememberCardInfo(file, result.data || {}, result.briefing || "", result.customer || null);
+      addCustomerRow(result.data || {}, `SNS 프로필 캡처 · ${file.name}`, {
+        id: result.customer?.id,
+        createdAt: result.customer?.created_at,
+        customer: result.customer || null,
+      });
+      rememberMessage("assistant", `SNS 프로필 캡처 인식 결과: ${JSON.stringify(result.data || {})}\n브리핑: ${result.briefing || ""}`);
+      return;
+    }
+
     if (!result.is_business_card) {
       updatePlanStep(planSteps, "vision", "error", 100, "이미지를 명함으로 확정하지 못했습니다.");
-      appendMessage("ai", "이미지를 확인했지만 명함으로 판단되지는 않습니다. 다른 명함 이미지를 첨부해 주세요.");
+      appendMessage("ai", "이미지를 확인했지만 명함이나 SNS 프로필 화면으로 판단되지는 않습니다. 프로필 이름이 보이는 화면 캡처나 명함 이미지를 첨부해 주세요.");
       return;
     }
 
@@ -838,11 +865,11 @@ async function importSnsLinks(text) {
   questionSequence += 1;
   addLogDivider(`SNS ${questionSequence}`);
   const planSteps = createSnsPlan(text, urls);
-  addLog("SNS Agent", `${urls.length}개의 SNS 링크를 고객 등록 대상으로 감지했습니다.`);
-  const loadingMessage = appendMessage("ai", "SNS 링크를 플랫폼별로 구분하고 고객 후보로 저장하고 있습니다.");
+  addLog("SNS Agent", `${urls.length}개의 SNS 링크를 프로필 이름 확인 대상으로 감지했습니다.`);
+  const loadingMessage = appendMessage("ai", "SNS 링크를 플랫폼별로 구분하고 공개 프로필 이름을 확인하고 있습니다.");
 
   updatePlanStep(planSteps, "detect", "done", 100, "LinkedIn, Instagram, Facebook, X, YouTube 등 지원 SNS 링크를 분류했습니다.");
-  updatePlanStep(planSteps, "normalize", "active", 50, "SNS 링크를 회사명, 이름, 직무, 홈페이지 필드로 정규화하고 있습니다.");
+  updatePlanStep(planSteps, "normalize", "active", 50, "공개 프로필 메타데이터에서 이름을 먼저 확인하고 있습니다.");
 
   try {
     const response = await apiFetch("/api/extract/sns", {
@@ -859,11 +886,21 @@ async function importSnsLinks(text) {
     }
 
     loadingMessage.remove();
-    updatePlanStep(planSteps, "normalize", "done", 100, `${result.count || 0}개의 SNS 정보를 명함 입력 형식으로 변환했습니다.`);
-    updatePlanStep(planSteps, "save", "done", 100, "accounts와 contacts에 SNS 기반 고객 후보를 저장했습니다.");
+    const savedItems = (result.items || []).filter((item) => item.saved);
+    const pendingItems = (result.items || []).filter((item) => item.needs_confirmation);
+    updatePlanStep(planSteps, "normalize", "done", 100, `${savedItems.length}건은 이름을 확인했고, ${pendingItems.length}건은 이름 확인이 필요합니다.`);
+    updatePlanStep(
+      planSteps,
+      "save",
+      pendingItems.length > 0 && savedItems.length === 0 ? "skipped" : "done",
+      pendingItems.length > 0 && savedItems.length === 0 ? 0 : 100,
+      pendingItems.length > 0
+        ? "이름을 확정하지 못한 SNS 프로필은 고객으로 저장하지 않았습니다."
+        : "accounts와 contacts에 SNS 기반 고객 정보를 저장했습니다."
+    );
 
     appendMessage("ai", buildSnsImportHtml(result.items || []), { html: true });
-    (result.items || []).forEach((item) => {
+    savedItems.forEach((item) => {
       const source = `SNS · ${item.platform || "Unknown"}`;
       rememberCardInfo({ name: source }, item.data || {}, item.briefing || "", item.customer || null);
       addCustomerRow(item.data || {}, source, {
@@ -872,7 +909,7 @@ async function importSnsLinks(text) {
         customer: item.customer || null,
       });
     });
-    (result.items || [])
+    savedItems
       .filter((item) => item.briefing)
       .forEach((item) => {
         appendMessage("ai", buildBriefingHtml(item.briefing), { html: true });
@@ -929,7 +966,7 @@ async function requestChatReply(text) {
     const reply = result.reply || "응답을 생성하지 못했습니다.";
     appendMessage("ai", reply, { richText: true });
     if (result.sns_imported && Array.isArray(result.items)) {
-      result.items.forEach((item) => {
+      result.items.filter((item) => item.saved).forEach((item) => {
         const source = `SNS · ${item.platform || "Unknown"}`;
         rememberCardInfo({ name: source }, item.data || {}, item.briefing || "", item.customer || null);
         addCustomerRow(item.data || {}, source, {
