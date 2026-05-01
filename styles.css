@@ -570,23 +570,26 @@ h3 {
 
 .canvas-area {
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding: 18px;
   background: var(--surface);
 }
 
 .module-view {
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
+  gap: 8px;
+  overflow: hidden;
 }
 
 .module-filter {
   display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 1fr)) minmax(34px, auto);
-  gap: 8px;
+  grid-template-columns: repeat(3, minmax(96px, 180px)) minmax(30px, auto);
+  gap: 6px;
   align-items: center;
+  justify-content: end;
 }
 
 .calendar-picker {
@@ -599,14 +602,24 @@ h3 {
 .calendar-picker input,
 .calendar-picker select {
   width: 100%;
-  min-height: 34px;
+  min-height: 30px;
   margin-top: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
   color: var(--text);
-  padding: 0 10px;
+  padding: 0 9px;
   font: inherit;
+}
+
+.module-filter input {
+  font-size: 12px;
+}
+
+.module-filter input::placeholder {
+  color: var(--muted);
+  font-size: inherit;
+  opacity: 1;
 }
 
 .calendar-toolbar button,
@@ -632,9 +645,9 @@ h3 {
   justify-self: end;
   display: inline-grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  min-height: 34px;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
   background: #fff;
@@ -643,8 +656,8 @@ h3 {
 }
 
 .module-search-button svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -662,6 +675,7 @@ h3 {
 .grid-board {
   height: 100%;
   min-height: 300px;
+  overflow: auto;
   display: grid;
   grid-template-columns: repeat(2, minmax(170px, 1fr));
   grid-auto-rows: minmax(116px, auto);
@@ -671,7 +685,8 @@ h3 {
 
 .customer-table-wrap {
   min-width: 720px;
-  min-height: 100%;
+  min-height: 0;
+  height: 100%;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -736,10 +751,12 @@ h3 {
 }
 
 .calendar-view {
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
+  overflow: hidden;
 }
 
 .calendar-toolbar {
