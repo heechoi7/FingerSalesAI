@@ -490,9 +490,24 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 - 첫 커밋 생성 완료
 
 남은 작업:
-- GitHub/GitLab/Bitbucket 등 private 원격 저장소 URL 확정
-- `git remote add origin <private-repo-url>`
-- `git push -u origin main`
+- 원격 저장소 연결 완료: `https://github.com/heechoi7/FingerSalesAI.git`
+- `main` 브랜치가 `origin/main`을 추적하도록 설정 완료
+- 최초 push 완료
+
+### 2026-05-01: GitHub 원격 저장소 연결 및 push
+
+변경 파일:
+- `README.md`
+- `docs/HANDOFF_WORKFLOW.md`
+
+작업 내용:
+- GitHub 저장소 `https://github.com/heechoi7/FingerSalesAI.git`를 `origin`으로 추가했습니다.
+- Git의 dubious ownership 경고를 해결하기 위해 이 프로젝트 폴더를 safe.directory로 등록했습니다.
+- 로컬 `main` 브랜치를 `origin/main`에 push했습니다.
+- MacBook에서 clone할 수 있도록 원격 저장소 정보를 문서화했습니다.
+
+검증:
+- `git push -u origin main` 성공
 
 ### 2026-04-30: 상단 사용자 표시 중복 제거
 

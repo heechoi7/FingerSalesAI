@@ -51,12 +51,20 @@
 - 기본 브랜치는 `main`입니다.
 - `.gitignore`가 추가되어 `.env`, 가상환경, uv 캐시, 로그, Python 캐시, DB dump 파일을 제외합니다.
 - 첫 로컬 커밋 메시지는 `chore: initialize FingerSalesAI project`입니다.
-- 원격 private 저장소 URL은 아직 연결 전입니다.
+- 원격 저장소는 `https://github.com/heechoi7/FingerSalesAI.git`입니다.
+- 로컬 `main` 브랜치는 `origin/main`을 추적합니다.
 
 원격 저장소 연결 순서:
 
 ```powershell
 git remote add origin <private-repo-url>
+git push -u origin main
+```
+
+현재 저장소 기준으로 이미 수행된 명령:
+
+```powershell
+git remote add origin https://github.com/heechoi7/FingerSalesAI.git
 git push -u origin main
 ```
 
