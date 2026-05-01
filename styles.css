@@ -521,11 +521,7 @@ h3 {
   min-height: 0;
   overflow: auto;
   padding: 18px;
-  background:
-    linear-gradient(var(--line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line) 1px, transparent 1px),
-    var(--surface-soft);
-  background-size: 28px 28px;
+  background: var(--surface);
 }
 
 .grid-board {
