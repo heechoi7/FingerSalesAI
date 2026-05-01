@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FingerSalesAI 로그인</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="login-page">
+    <main class="login-shell" aria-label="FingerSalesAI 로그인">
+      <section class="login-panel">
+        <div class="login-brand">
+          <img src="/fingersales_logo.png" alt="FingerSalesAI" />
+        </div>
+
+        <div class="auth-tabs" role="tablist" aria-label="인증 방식">
+          <button class="auth-tab active" type="button" data-auth-mode="login">로그인</button>
+          <button class="auth-tab" type="button" data-auth-mode="register">회원가입</button>
+        </div>
+
+        <form class="login-form" id="login-form">
+          <div class="login-title">
+            <h1>로그인</h1>
+            <p>테넌트 계정으로 작업 공간에 접속합니다.</p>
+          </div>
+
+          <label class="field-group">
+            <span>테넌트 코드</span>
+            <input type="text" name="tenant_code" autocomplete="organization" placeholder="예: fingerpost" required />
+          </label>
+
+          <label class="field-group">
+            <span>이메일</span>
+            <input type="email" name="email" autocomplete="username" placeholder="name@example.com" required />
+          </label>
+
+          <label class="field-group">
+            <span>비밀번호</span>
+            <input type="password" name="password" autocomplete="current-password" placeholder="비밀번호" required />
+          </label>
+
+          <p class="login-message" id="login-message" aria-live="polite"></p>
+          <button class="login-button" type="submit">로그인</button>
+        </form>
+
+        <form class="login-form hidden" id="register-form">
+          <div class="login-title">
+            <h1>회원가입</h1>
+            <p>테넌트가 없으면 새로 만들고, 있으면 해당 테넌트에 사용자를 추가합니다.</p>
+          </div>
+
+          <label class="field-group">
+            <span>테넌트 코드</span>
+            <input type="text" name="tenant_code" autocomplete="organization" placeholder="예: finger" required />
+          </label>
+
+          <label class="field-group">
+            <span>테넌트 이름</span>
+            <input type="text" name="tenant_name" autocomplete="organization-title" placeholder="예: Finger" />
+          </label>
+
+          <label class="field-group">
+            <span>이름</span>
+            <input type="text" name="name" autocomplete="name" placeholder="사용자 이름" required />
+          </label>
+
+          <label class="field-group">
+            <span>이메일</span>
+            <input type="email" name="email" autocomplete="username" placeholder="name@example.com" required />
+          </label>
+
+          <label class="field-group">
+            <span>역할</span>
+            <select name="role" required>
+              <option value="sales">영업</option>
+              <option value="manager">매니저</option>
+              <option value="admin">관리자</option>
+              <option value="owner">소유자</option>
+              <option value="viewer">조회</option>
+            </select>
+          </label>
+
+          <label class="field-group">
+            <span>비밀번호</span>
+            <input type="password" name="password" autocomplete="new-password" placeholder="비밀번호" required />
+          </label>
+
+          <p class="login-message" id="register-message" aria-live="polite"></p>
+          <button class="login-button" type="submit">계정 만들기</button>
+        </form>
+      </section>
+    </main>
+
+    <script>
+      const loginForm = document.querySelector("#login-form");
+      const registerForm = document.querySelector("#register-form");
+      const loginMessage = document.querySelector("#login-message");
+      const registerMessage = document.querySelector("#register-message");
+      const authTabs = document.querySelectorAll(".auth-tab");
+      const savedLogin = JSON.parse(localStorage.getItem("fingersalesai:last-login") || "{}");
+
+      if (savedLogin.tenant_code) {
+        loginForm.elements.tenant_code.value = savedLogin.tenant_code;
+        registerForm.elements.tenant_code.value = savedLogin.tenant_code;
+      }
+      if (savedLogin.email) {
+        loginForm.elements.email.value = savedLogin.email;
+        registerForm.elements.email.value = savedLogin.email;
+      }
+
+      function setAuthMode(mode) {
+        const isRegister = mode === "register";
+        loginForm.classList.toggle("hidden", isRegister);
+        registerForm.classList.toggle("hidden", !isRegister);
+        authTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.authMode === mode));
+      }
+
+      function rememberLogin(tenantCode, email) {
+        localStorage.setItem(
+          "fingersalesai:last-login",
+          JSON.stringify({
+            tenant_code: tenantCode,
+            email,
+          }),
+        );
+      }
+
+      authTabs.forEach((tab) => {
+        tab.addEventListener("click", () => setAuthMode(tab.dataset.authMode));
+      });
+
+      loginForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submitButton = loginForm.querySelector("button[type='submit']");
+        const formData = new FormData(loginForm);
+        const payload = {
+          tenant_code: String(formData.get("tenant_code") || "").trim(),
+          email: String(formData.get("email") || "").trim(),
+          password: String(formData.get("password") || ""),
+        };
+
+        loginMessage.textContent = "";
+        submitButton.disabled = true;
+
+        try {
+          const response = await fetch("/api/auth/login", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const result = await response.json();
+          if (!response.ok || !result.success) {
+            throw new Error(result.detail || result.error || "로그인 정보를 확인해 주세요.");
+          }
+          rememberLogin(payload.tenant_code, payload.email);
+          window.location.replace("/");
+        } catch (error) {
+          loginMessage.textContent = error.message;
+        } finally {
+          submitButton.disabled = false;
+        }
+      });
+
+      registerForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submitButton = registerForm.querySelector("button[type='submit']");
+        const formData = new FormData(registerForm);
+        const payload = {
+          tenant_code: String(formData.get("tenant_code") || "").trim(),
+          tenant_name: String(formData.get("tenant_name") || "").trim(),
+          name: String(formData.get("name") || "").trim(),
+          email: String(formData.get("email") || "").trim(),
+          role: String(formData.get("role") || "sales"),
+          password: String(formData.get("password") || ""),
+        };
+
+        registerMessage.textContent = "";
+        submitButton.disabled = true;
+
+        try {
+          const response = await fetch("/api/auth/register", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const result = await response.json();
+          if (!response.ok || !result.success) {
+            throw new Error(result.detail || result.error || "회원가입 정보를 확인해 주세요.");
+          }
+          rememberLogin(payload.tenant_code, payload.email);
+          loginForm.elements.tenant_code.value = payload.tenant_code;
+          loginForm.elements.email.value = payload.email;
+          loginForm.elements.password.value = "";
+          registerForm.reset();
+          registerMessage.textContent = "";
+          loginMessage.textContent = result.message || "회원가입이 완료되었습니다. 로그인해 주세요.";
+          setAuthMode("login");
+        } catch (error) {
+          registerMessage.textContent = error.message;
+        } finally {
+          submitButton.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

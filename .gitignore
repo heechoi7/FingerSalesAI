@@ -1,0 +1,38 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and uv local runtime/cache
+.venv/
+.uv-cache/
+.uv-python/
+
+# Logs
+*.log
+server.out.log
+server.err.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local database exports
+*.sql
+*.dump
+*.bak
+
+# Temporary files
+tmp/
+temp/
+*.tmp

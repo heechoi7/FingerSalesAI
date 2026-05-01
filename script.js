@@ -1,0 +1,873 @@
+const workspace = document.querySelector(".workspace");
+const chatInput = document.querySelector(".chat-input");
+const chatStream = document.querySelector(".chat-stream");
+const canvasTitle = document.querySelector("#canvas-title");
+const menuButtons = document.querySelectorAll(".main-nav button");
+const panelFocusButtons = document.querySelectorAll(".maximize-panel-btn");
+const attachButton = document.querySelector(".attach-btn");
+const fileInput = document.querySelector("#chat-file-input");
+const attachmentPreview = document.querySelector(".attachment-preview");
+const agentStack = document.querySelector(".agent-stack");
+const logList = document.querySelector(".log-list");
+const sendButton = document.querySelector(".send-btn");
+const customerTableBody = document.querySelector("#customer-table-body");
+const customerDetailList = document.querySelector("#customer-detail-list");
+const customerDetailTitle = document.querySelector("#customer-detail-title");
+const sessionUserLabel = document.querySelector("#session-user-label");
+const logoutButton = document.querySelector("#logout-button");
+const dropTargets = [document.querySelector(".chat-panel"), document.querySelector(".chat-input"), chatStream].filter(Boolean);
+
+let dragState = null;
+let pendingFiles = [];
+let isSubmitting = false;
+let isLoadingCustomers = false;
+let questionSequence = 0;
+let currentSession = null;
+const memory = {
+  cards: [],
+  messages: [],
+  selectedCustomer: null,
+};
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function startResize(event, side) {
+  if (window.innerWidth <= 1024) return;
+
+  const pointerX = event.clientX ?? event.touches?.[0]?.clientX;
+  const rect = workspace.getBoundingClientRect();
+  const styles = getComputedStyle(document.documentElement);
+
+  dragState = {
+    side,
+    rect,
+    left: parseFloat(styles.getPropertyValue("--left-size")) || 50,
+    right: parseFloat(styles.getPropertyValue("--right-size")) || 20,
+    pointerX,
+  };
+
+  event.currentTarget.classList.add("active");
+  document.body.style.userSelect = "none";
+}
+
+function resizePanels(event) {
+  if (!dragState) return;
+
+  const pointerX = event.clientX ?? event.touches?.[0]?.clientX;
+  const deltaPercent = ((pointerX - dragState.pointerX) / dragState.rect.width) * 100;
+
+  if (dragState.side === "left") {
+    document.documentElement.style.setProperty("--left-size", `${clamp(dragState.left + deltaPercent, 30, 60)}%`);
+  }
+
+  if (dragState.side === "right") {
+    document.documentElement.style.setProperty("--right-size", `${clamp(dragState.right - deltaPercent, 16, 36)}%`);
+  }
+}
+
+function stopResize() {
+  if (!dragState) return;
+  document.querySelectorAll(".splitter.active").forEach((splitter) => splitter.classList.remove("active"));
+  document.body.style.userSelect = "";
+  dragState = null;
+}
+
+function nudgePanel(side, direction) {
+  if (window.innerWidth <= 1024) return;
+
+  const styles = getComputedStyle(document.documentElement);
+  const left = parseFloat(styles.getPropertyValue("--left-size")) || 50;
+  const right = parseFloat(styles.getPropertyValue("--right-size")) || 20;
+
+  if (side === "left") {
+    document.documentElement.style.setProperty("--left-size", `${clamp(left + direction * 2, 30, 60)}%`);
+  }
+
+  if (side === "right") {
+    document.documentElement.style.setProperty("--right-size", `${clamp(right - direction * 2, 16, 36)}%`);
+  }
+}
+
+document.querySelector(".splitter-left")?.addEventListener("pointerdown", (event) => {
+  event.currentTarget.setPointerCapture(event.pointerId);
+  startResize(event, "left");
+});
+
+document.querySelector(".splitter-right")?.addEventListener("pointerdown", (event) => {
+  event.currentTarget.setPointerCapture(event.pointerId);
+  startResize(event, "right");
+});
+
+document.querySelector(".splitter-left")?.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault();
+  nudgePanel("left", event.key === "ArrowRight" ? 1 : -1);
+});
+
+document.querySelector(".splitter-right")?.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault();
+  nudgePanel("right", event.key === "ArrowRight" ? 1 : -1);
+});
+
+window.addEventListener("pointermove", resizePanels);
+window.addEventListener("pointerup", stopResize);
+
+function clearPanelFocus() {
+  workspace.classList.remove("focus-left", "focus-chat");
+}
+
+panelFocusButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    if (window.innerWidth <= 1024) return;
+    const focusClass = `focus-${button.dataset.focusPanel}`;
+    const isFocused = workspace.classList.contains(focusClass);
+    clearPanelFocus();
+    if (!isFocused) {
+      workspace.classList.add(focusClass);
+    }
+  });
+});
+
+window.addEventListener("resize", () => {
+  if (window.innerWidth <= 1024) {
+    clearPanelFocus();
+  }
+});
+
+menuButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    menuButtons.forEach((item) => item.classList.remove("active"));
+    button.classList.add("active");
+    canvasTitle.textContent = button.dataset.canvasTitle;
+    if (button === menuButtons[0]) {
+      loadCustomers();
+    }
+  });
+});
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function redirectToLogin() {
+  window.location.replace("/login.html");
+}
+
+async function apiFetch(url, options = {}) {
+  const response = await fetch(url, {
+    credentials: "same-origin",
+    ...options,
+  });
+  if (response.status === 401) {
+    redirectToLogin();
+    throw new Error("로그인이 필요합니다.");
+  }
+  return response;
+}
+
+function updateSessionHeader(session) {
+  currentSession = session;
+  if (!sessionUserLabel) return;
+  const roleText = session.role_label || session.role || "";
+  const tenantText = session.tenant_name || session.tenant_code || "테넌트";
+  const userText = session.user_name || session.email || "사용자";
+  sessionUserLabel.innerHTML = `${escapeHtml(tenantText)} <span>/ ${escapeHtml(userText)} / ${escapeHtml(roleText)}</span>`;
+}
+
+async function loadCurrentSession() {
+  if (window.__FSAI_SESSION__) {
+    updateSessionHeader(window.__FSAI_SESSION__);
+  }
+  const response = await apiFetch("/api/auth/me");
+  const result = await response.json();
+  if (!response.ok || !result.success) {
+    throw new Error(result.detail || result.error || "로그인 정보를 불러오지 못했습니다.");
+  }
+  updateSessionHeader(result.session);
+}
+
+async function logout() {
+  window.location.href = "/logout";
+}
+
+function appendMessage(role, content, options = {}) {
+  const message = document.createElement("article");
+  message.className = `message ${role}`;
+
+  if (options.html) {
+    const body = document.createElement("div");
+    body.className = "message-body";
+    body.innerHTML = content;
+    message.append(body);
+  } else if (options.richText) {
+    const body = document.createElement("div");
+    body.className = "message-body";
+    body.innerHTML = renderRichText(content);
+    message.append(body);
+  } else {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = content;
+    message.append(paragraph);
+  }
+
+  chatStream.append(message);
+  chatStream.scrollTop = chatStream.scrollHeight;
+  return message;
+}
+
+function renderRichText(value) {
+  const withoutBoldMarkers = String(value || "")
+    .replaceAll("**", "")
+    .replace(/(^|\n)(\s*)\*\s+/g, "$1$2• ");
+  const escaped = escapeHtml(withoutBoldMarkers);
+  const linked = escaped
+    .split("\n")
+    .map((line) => {
+      const markdownLink = line.match(/^\s*\[([^\]]+)\]\((https?:\/\/.*)\)\s*$/);
+      if (markdownLink) {
+        const label = markdownLink[1];
+        const url = markdownLink[2].replace(/&amp;/g, "&");
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      }
+
+      if (/^\s*https?:\/\/\S+\s*$/.test(line)) {
+        return "";
+      }
+
+      return line.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_match, label, url) => {
+        return `<a href="${url.replace(/&amp;/g, "&")}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      });
+    })
+    .filter((line) => line.trim() !== "");
+
+  return linked
+    .join("\n")
+    .split(/\n{2,}/)
+    .map((block) => `<p>${block.replace(/\n/g, "<br />")}</p>`)
+    .join("");
+}
+
+function rememberMessage(role, content) {
+  memory.messages.push({
+    role,
+    content: String(content || "").slice(0, 3000),
+    createdAt: new Date().toISOString(),
+  });
+
+  if (memory.messages.length > 20) {
+    memory.messages = memory.messages.slice(-20);
+  }
+}
+
+function rememberCardInfo(file, data, briefing, customer = null) {
+  memory.cards.unshift({
+    id: customer?.id || null,
+    fileName: file.name,
+    data: data || {},
+    briefing: briefing || "",
+    createdAt: customer?.created_at || new Date().toISOString(),
+  });
+
+  if (memory.cards.length > 10) {
+    memory.cards = memory.cards.slice(0, 10);
+  }
+}
+
+function customerToCardData(customer) {
+  if (customer?.card_data && Object.keys(customer.card_data).length) {
+    return customer.card_data;
+  }
+
+  return {
+    "회사명": customer?.company_name || "",
+    "이름": customer?.contact_name || "",
+    "직무": customer?.job_title || "",
+    "직위": customer?.job_position || "",
+    "휴대전화": customer?.mobile_phone || "",
+    "이메일": customer?.email || "",
+    "홈페이지": customer?.homepage || "",
+    ...(customer?.extra_info || {}),
+  };
+}
+
+function customerSource(customer) {
+  return customer?.source_file ? `DB · ${customer.source_file}` : "DB";
+}
+
+function setSelectedCustomer(data, source, customer = null) {
+  memory.selectedCustomer = {
+    id: customer?.id || customer?.contact_id || null,
+    contactId: customer?.contact_id || customer?.id || null,
+    accountId: customer?.account_id || null,
+    tenantId: customer?.tenant_id || null,
+    ownerUserId: customer?.owner_user_id || null,
+    source,
+    data: data || {},
+    customer: customer || null,
+    selectedAt: new Date().toISOString(),
+  };
+}
+
+function compactExtraInfo(data) {
+  const baseKeys = new Set(["회사명", "이름", "직무", "직위", "휴대전화", "이메일", "홈페이지"]);
+  return Object.entries(data || {})
+    .filter(([key, value]) => !baseKeys.has(key) && value)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(" / ");
+}
+
+function addCustomerRow(data, source = "명함 인식", options = {}) {
+  if (!customerTableBody) return;
+
+  customerTableBody.querySelector(".empty-row")?.remove();
+  const row = document.createElement("tr");
+  row.className = "customer-row";
+  if (options.id) {
+    row.dataset.customerId = String(options.id);
+  }
+  const registeredDate = options.createdAt ? new Date(options.createdAt) : new Date();
+  const registeredAt = registeredDate.toLocaleTimeString("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const fields = [
+    data["회사명"] || "",
+    data["이름"] || "",
+    data["직무"] || "",
+    data["직위"] || "",
+    data["휴대전화"] || "",
+    data["이메일"] || "",
+    data["홈페이지"] || "",
+    compactExtraInfo(data),
+    registeredAt,
+  ];
+
+  row.innerHTML = fields.map((value) => `<td>${escapeHtml(value || "-")}</td>`).join("");
+  row.title = source;
+  row.addEventListener("click", () => {
+    customerTableBody.querySelectorAll(".customer-row.selected").forEach((item) => item.classList.remove("selected"));
+    row.classList.add("selected");
+    setSelectedCustomer(data, source, options.customer || null);
+    updateCustomerDetail(data, source, options.customer || null);
+  });
+  customerTableBody.append(row);
+  customerTableBody.querySelectorAll(".customer-row.selected").forEach((item) => item.classList.remove("selected"));
+  row.classList.add("selected");
+  row.scrollIntoView({ block: "nearest" });
+  setSelectedCustomer(data, source, options.customer || null);
+  updateCustomerDetail(data, source, options.customer || null);
+}
+
+function renderCustomerRows(customers) {
+  if (!customerTableBody) return;
+  customerTableBody.innerHTML = "";
+
+  if (!customers.length) {
+    memory.selectedCustomer = null;
+    customerTableBody.innerHTML = `<tr class="empty-row"><td colspan="9">저장된 고객 정보가 없습니다.</td></tr>`;
+    return;
+  }
+
+  memory.cards = customers.slice(0, 10).map((customer) => ({
+    id: customer.id,
+    fileName: customer.source_file || "DB",
+    data: customerToCardData(customer),
+    briefing: customer.briefing || "",
+    createdAt: customer.created_at,
+  }));
+
+  customers
+    .slice()
+    .reverse()
+    .forEach((customer) => {
+      addCustomerRow(customerToCardData(customer), customerSource(customer), {
+        id: customer.id,
+        createdAt: customer.created_at,
+        customer,
+      });
+    });
+}
+
+async function loadCustomers() {
+  if (isLoadingCustomers) return;
+  isLoadingCustomers = true;
+  try {
+    const response = await apiFetch("/api/customers");
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || "고객 목록을 불러오지 못했습니다.");
+    }
+    renderCustomerRows(result.customers || []);
+  } catch (error) {
+    addLog("DB", error.message, "error");
+  } finally {
+    isLoadingCustomers = false;
+  }
+}
+
+function updateCustomerDetail(data, source, customer = null) {
+  if (!customerDetailList) return;
+  if (customerDetailTitle) {
+    const company = data["회사명"] || "회사명 미확인";
+    const name = data["이름"] || "이름 미확인";
+    customerDetailTitle.textContent = `${company} / ${name}`;
+  }
+
+  const detailRows = [
+    ["출처", source],
+    ["테넌트", customer?.tenant_id || "-"],
+    ["사용자 ID", customer?.owner_user_id || "-"],
+    ["고객사 ID", customer?.account_id || "-"],
+    ["연락처 ID", customer?.contact_id || customer?.id || "-"],
+    ["회사", data["회사명"] || "-"],
+    ["담당자", data["이름"] || "-"],
+    ["직무/직위", [data["직무"], data["직위"]].filter(Boolean).join(" / ") || "-"],
+    ["연락처", data["휴대전화"] || "-"],
+    ["이메일", data["이메일"] || "-"],
+    ["홈페이지", data["홈페이지"] || "-"],
+    ["주소", customer?.address || data["주소"] || "-"],
+    ["대표전화", customer?.account_phone || data["대표전화"] || "-"],
+    ["추가 정보", compactExtraInfo(data) || "-"],
+  ];
+
+  customerDetailList.innerHTML = detailRows
+    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
+    .join("");
+}
+
+function getConversationContext() {
+  return {
+    selectedCustomer: memory.selectedCustomer,
+    cards: memory.cards,
+    history: memory.messages.slice(-12),
+  };
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderAttachmentPreview() {
+  attachmentPreview.innerHTML = "";
+  attachmentPreview.classList.toggle("has-files", pendingFiles.length > 0);
+
+  pendingFiles.forEach((file, index) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "attachment-chip";
+    chip.title = "첨부 제거";
+    chip.innerHTML = `<span>${escapeHtml(file.name)}</span><small>${formatFileSize(file.size)}</small>`;
+    chip.addEventListener("click", () => {
+      pendingFiles.splice(index, 1);
+      renderAttachmentPreview();
+    });
+    attachmentPreview.append(chip);
+  });
+}
+
+function clearPendingFiles() {
+  pendingFiles = [];
+  renderAttachmentPreview();
+}
+
+function scrollPanelToBottom(panel) {
+  if (!panel) return;
+  requestAnimationFrame(() => {
+    panel.scrollTop = panel.scrollHeight;
+  });
+}
+
+function addLog(agent, detail, status = "active") {
+  const item = document.createElement("li");
+  item.className = status;
+
+  const label = document.createElement("time");
+  label.textContent = agent;
+
+  const body = document.createElement("span");
+  body.textContent = detail;
+
+  item.append(label, body);
+  logList.append(item);
+  scrollPanelToBottom(logList);
+  return item;
+}
+
+function addLogDivider(title) {
+  const item = document.createElement("li");
+  item.className = "log-divider";
+  item.innerHTML = `<time>${title}</time><span></span>`;
+  logList.append(item);
+  scrollPanelToBottom(logList);
+}
+
+function createPlan(file, imageUrl) {
+  agentStack.innerHTML = "";
+
+  const imageCard = document.createElement("article");
+  imageCard.className = "agent-card upload-plan-card";
+  imageCard.innerHTML = `
+    <img src="${imageUrl}" alt="${escapeHtml(file.name)} 미리보기" />
+    <div>
+      <span class="agent-mark red"></span>
+      <strong>${escapeHtml(file.name)}</strong>
+    </div>
+    <p>업로드 이미지를 기준으로 명함 인식과 회사 브리핑 작업을 실행합니다.</p>
+  `;
+  agentStack.append(imageCard);
+
+  const steps = [
+    ["planner", "플래닝", "이미지 입력을 분석 작업으로 등록하고 실행 순서를 구성합니다.", 16],
+    ["vision", "명함 인식", "Vision Agent가 명함 여부와 텍스트 필드를 추출합니다.", 8],
+    ["research", "정보 보강", "Research Agent가 누락된 연락처와 회사 정보를 검색합니다.", 0],
+    ["briefing", "브리핑 생성", "Analyst Agent가 영업 관점의 회사 브리핑을 작성합니다.", 0],
+  ].map(([id, title, description, value]) => {
+    const card = document.createElement("article");
+    card.className = "agent-card pending";
+    card.dataset.step = id;
+    card.innerHTML = `
+      <div>
+        <span class="agent-mark blue"></span>
+        <strong>${title}</strong>
+        <small class="step-state">대기</small>
+      </div>
+      <p>${description}</p>
+      <progress value="${value}" max="100"></progress>
+    `;
+    agentStack.append(card);
+    return card;
+  });
+
+  addLog("Planner", `${file.name} 파일을 실행 대상으로 등록했습니다.`);
+  scrollPanelToBottom(agentStack);
+  return steps;
+}
+
+function createConversationPlan(text) {
+  agentStack.innerHTML = "";
+  const summary = text.length > 42 ? `${text.slice(0, 42)}...` : text;
+
+  const requestCard = document.createElement("article");
+  requestCard.className = "agent-card upload-plan-card";
+  requestCard.innerHTML = `
+    <div>
+      <span class="agent-mark red"></span>
+      <strong>대화 요청</strong>
+    </div>
+    <p>${escapeHtml(summary)}</p>
+  `;
+  agentStack.append(requestCard);
+
+  const steps = [
+    ["context", "컨텍스트 확인", "최근 명함 정보와 이전 대화 중 현재 질문에 필요한 내용을 선별합니다.", 20],
+    ["research", "리서치 검색", "질문에 필요한 최신 외부 정보를 검색하고 출처 후보를 정리합니다.", 0],
+    ["answer", "답변 생성", "컨텍스트와 검색 결과를 통합해 실행 가능한 답변을 작성합니다.", 0],
+  ].map(([id, title, description, value]) => {
+    const card = document.createElement("article");
+    card.className = "agent-card pending";
+    card.dataset.step = id;
+    card.innerHTML = `
+      <div>
+        <span class="agent-mark blue"></span>
+        <strong>${title}</strong>
+        <small class="step-state">대기</small>
+      </div>
+      <p>${description}</p>
+      <progress value="${value}" max="100"></progress>
+    `;
+    agentStack.append(card);
+    return card;
+  });
+
+  scrollPanelToBottom(agentStack);
+  return steps;
+}
+
+function updatePlanStep(steps, stepId, state, value, logDetail) {
+  const card = steps.find((item) => item.dataset.step === stepId);
+  if (!card) return;
+
+  card.classList.remove("pending", "active", "done", "error");
+  card.classList.add(state);
+  card.querySelector(".step-state").textContent = state === "done" ? "완료" : state === "error" ? "오류" : state === "skipped" ? "생략" : "실행 중";
+  card.querySelector("progress").value = value;
+
+  if (logDetail) {
+    addLog(card.querySelector("strong").textContent, logDetail, state);
+  }
+  scrollPanelToBottom(agentStack);
+}
+
+function buildUploadedImageHtml(file, imageUrl) {
+  return `
+    <figure class="uploaded-image-message">
+      <img src="${imageUrl}" alt="${escapeHtml(file.name)}" />
+      <figcaption>${escapeHtml(file.name)} · ${formatFileSize(file.size)}</figcaption>
+    </figure>
+  `;
+}
+
+function buildCardInfoHtml(data) {
+  const preferredLabels = ["회사명", "이름", "직무", "직위", "휴대전화", "이메일", "홈페이지"];
+  const rows = preferredLabels.filter((label) => Object.prototype.hasOwnProperty.call(data, label)).map((label) => [label, data[label]]);
+
+  Object.entries(data).forEach(([label, value]) => {
+    if (!preferredLabels.includes(label) && value) rows.push([label, value]);
+  });
+
+  const items = rows
+    .map(([label, value]) => `<li><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value || "정보 없음")}</span></li>`)
+    .join("");
+
+  return `<p>명함 이미지를 인식했습니다. 추출된 정보는 아래와 같습니다.</p><ul class="card-result-list">${items}</ul>`;
+}
+
+function buildBriefingHtml(briefing) {
+  const paragraphs = String(briefing || "")
+    .split(/\n{2,}/)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map((text) => `<p>${escapeHtml(text)}</p>`)
+    .join("");
+
+  return `<p class="briefing-kicker">브리핑 자료</p>${paragraphs || "<p>브리핑 자료를 생성하지 못했습니다.</p>"}`;
+}
+
+async function analyzeBusinessCard(file, imageUrl, options = {}) {
+  const skipBriefing = Boolean(options.skipBriefing);
+  const planSteps = createPlan(file, imageUrl);
+  appendMessage("user", buildUploadedImageHtml(file, imageUrl), { html: true });
+  const loadingMessage = appendMessage(
+    "ai",
+    skipBriefing
+      ? "이미지를 분석하고 있습니다. 여러 장을 한꺼번에 처리하므로 고객 정보 추출까지만 진행합니다."
+      : "이미지를 분석하고 있습니다. 명함 정보 추출 후 회사 브리핑까지 이어서 표시하겠습니다.",
+  );
+
+  updatePlanStep(planSteps, "planner", "done", 100, "파일 형식과 작업 목적을 확인하고 Vision, Research, Analyst 단계로 분해했습니다.");
+  updatePlanStep(planSteps, "vision", "active", 48, "이미지에서 이름, 회사명, 직위, 연락처 후보를 추출하고 있습니다.");
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const response = await apiFetch(`/api/extract?skip_briefing=${skipBriefing ? "true" : "false"}`, {
+      method: "POST",
+      body: formData,
+    });
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || "명함 분석 중 오류가 발생했습니다.");
+    }
+
+    loadingMessage.remove();
+
+    if (!result.is_business_card) {
+      updatePlanStep(planSteps, "vision", "error", 100, "이미지를 명함으로 확정하지 못했습니다.");
+      appendMessage("ai", "이미지를 확인했지만 명함으로 판단되지는 않습니다. 다른 명함 이미지를 첨부해 주세요.");
+      return;
+    }
+
+    const company = result.data?.["회사명"] || "회사명 미확인";
+    const name = result.data?.["이름"] || "이름 미확인";
+    const hasBriefing = Boolean(result.briefing && !result.briefing.includes("오류"));
+
+    updatePlanStep(planSteps, "vision", "done", 100, `${name}, ${company} 정보를 명함에서 추출했습니다.`);
+    updatePlanStep(planSteps, "research", "done", 100, "추출 필드와 누락 가능 필드를 대조하고 검색 보강 결과를 반영했습니다.");
+    updatePlanStep(
+      planSteps,
+      "briefing",
+      skipBriefing ? "skipped" : hasBriefing ? "done" : "error",
+      skipBriefing ? 0 : 100,
+      skipBriefing
+        ? "여러 장 동시 처리 조건에 따라 고객별 브리핑 생성을 생략했습니다."
+        : hasBriefing
+          ? `${company} 기준의 영업 브리핑을 생성했습니다.`
+          : "브리핑 생성 단계에서 보강 가능한 공개 정보를 충분히 확보하지 못했습니다.",
+    );
+
+    appendMessage("ai", buildCardInfoHtml(result.data || {}), { html: true });
+    if (!skipBriefing) {
+      appendMessage("ai", buildBriefingHtml(result.briefing), { html: true });
+    }
+    rememberCardInfo(file, result.data || {}, result.briefing || "", result.customer || null);
+    addCustomerRow(result.data || {}, `명함 인식 · ${file.name}`, {
+      id: result.customer?.id,
+      createdAt: result.customer?.created_at,
+      customer: result.customer || null,
+    });
+    rememberMessage("assistant", `명함 인식 결과: ${JSON.stringify(result.data || {})}\n브리핑: ${result.briefing || ""}`);
+  } catch (error) {
+    loadingMessage.remove();
+    updatePlanStep(planSteps, "vision", "error", 100, error.message);
+    updatePlanStep(planSteps, "research", "error", 0, "이전 단계 오류로 정보 보강을 중단했습니다.");
+    updatePlanStep(planSteps, "briefing", "error", 0, "이전 단계 오류로 브리핑 생성을 중단했습니다.");
+    appendMessage("ai", `분석을 완료하지 못했습니다. ${error.message}`);
+  }
+}
+
+async function processPendingFiles() {
+  const files = [...pendingFiles];
+  const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+  const skipBriefing = imageFiles.length >= 2;
+  clearPendingFiles();
+
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) {
+      appendMessage("user", `${file.name} 파일을 첨부했습니다.`);
+      appendMessage("ai", "현재 자동 명함 인식은 이미지 파일에서만 실행됩니다.");
+      addLog("File Agent", `${file.name} 파일은 이미지가 아니므로 명함 인식 워크플로우에서 제외했습니다.`, "done");
+      continue;
+    }
+
+    const imageUrl = await readFileAsDataUrl(file);
+    await analyzeBusinessCard(file, imageUrl, { skipBriefing });
+  }
+}
+
+function addFiles(files) {
+  const nextFiles = Array.from(files ?? []);
+  if (!nextFiles.length) return;
+
+  pendingFiles = [...pendingFiles, ...nextFiles];
+  renderAttachmentPreview();
+}
+
+async function requestChatReply(text) {
+  appendMessage("user", text);
+  rememberMessage("user", text);
+  questionSequence += 1;
+  addLogDivider(`질문 ${questionSequence}`);
+  const planSteps = createConversationPlan(text);
+  addLog("Conversation Agent", "사용자 지시를 수신하고 LLM 대화 응답을 요청했습니다.");
+  const loadingMessage = appendMessage("ai", "답변을 생성하고 있습니다.");
+  updatePlanStep(planSteps, "context", "done", 100, "최근 명함 인식 결과와 대화 기록을 질문 기준으로 정리했습니다.");
+  updatePlanStep(planSteps, "research", "active", 55, "외부 검색이 필요한 정보 범위를 판단하고 리서치를 수행합니다.");
+
+  try {
+    const response = await apiFetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message: text,
+        context: getConversationContext(),
+      }),
+    });
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || "대화 응답 생성 중 오류가 발생했습니다.");
+    }
+
+    loadingMessage.remove();
+    updatePlanStep(planSteps, "research", "done", 100, "검색 결과와 기존 컨텍스트를 답변 근거로 정리했습니다.");
+    updatePlanStep(planSteps, "answer", "done", 100, "최신 정보 우선 규칙을 적용해 답변을 생성했습니다.");
+    const reply = result.reply || "응답을 생성하지 못했습니다.";
+    appendMessage("ai", reply, { richText: true });
+    rememberMessage("assistant", reply);
+    addLog("Conversation Agent", "LLM 응답을 채팅창에 반영했습니다.", "done");
+  } catch (error) {
+    loadingMessage.remove();
+    updatePlanStep(planSteps, "research", "error", 100, error.message);
+    updatePlanStep(planSteps, "answer", "error", 0, "이전 단계 오류로 답변 생성을 완료하지 못했습니다.");
+    appendMessage("ai", `답변을 생성하지 못했습니다. ${error.message}`);
+    addLog("Conversation Agent", error.message, "error");
+  }
+}
+
+attachButton?.addEventListener("click", () => fileInput?.click());
+
+fileInput?.addEventListener("change", (event) => {
+  addFiles(event.target.files);
+  event.target.value = "";
+});
+
+logoutButton?.addEventListener("click", logout);
+
+dropTargets.forEach((target) => {
+  target.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    chatInput?.classList.add("drag-over");
+  });
+
+  target.addEventListener("dragover", (event) => {
+    event.preventDefault();
+  });
+
+  target.addEventListener("dragleave", (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      chatInput?.classList.remove("drag-over");
+    }
+  });
+
+  target.addEventListener("drop", (event) => {
+    event.preventDefault();
+    chatInput?.classList.remove("drag-over");
+    addFiles(event.dataTransfer.files);
+  });
+});
+
+chatInput?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (isSubmitting) return;
+
+  const input = chatInput.querySelector('input[type="text"]');
+  const text = input.value.trim();
+  const hasFiles = pendingFiles.length > 0;
+  if (!text && !hasFiles) return;
+
+  isSubmitting = true;
+  sendButton.disabled = true;
+
+  try {
+    if (hasFiles) {
+      if (text) {
+        appendMessage("user", text);
+        rememberMessage("user", text);
+      }
+      input.value = "";
+      await processPendingFiles();
+      return;
+    }
+
+    input.value = "";
+    await requestChatReply(text);
+  } finally {
+    isSubmitting = false;
+    sendButton.disabled = false;
+  }
+});
+
+async function initApp() {
+  try {
+    await loadCurrentSession();
+    await loadCustomers();
+  } catch (error) {
+    addLog("Session", error.message, "error");
+  }
+}
+
+initApp();

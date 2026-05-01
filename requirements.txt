@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+pydantic
+langgraph
+langchain-core
+langchain-google-genai
+langchain-community
+tavily-python
+mysql-connector-python
+bcrypt

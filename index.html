@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FingerSalesAI</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="FingerSalesAI 홈">
+          <img src="/fingersales_logo.png" alt="FingerSalesAI" />
+        </a>
+
+        <nav class="main-nav" aria-label="주 메뉴">
+          <button type="button" class="active" data-canvas-title="고객">고객</button>
+          <button type="button" data-canvas-title="파이프라인">파이프라인</button>
+          <button type="button" data-canvas-title="캘린더">캘린더</button>
+          <button type="button" data-canvas-title="견적">견적</button>
+          <button type="button" data-canvas-title="계약">계약</button>
+        </nav>
+
+        <div class="top-actions">
+          <span class="admin-label" id="session-user-label">사용자 <span></span></span>
+          <a class="titlebar-action" id="logout-button" href="/logout" aria-label="로그아웃" title="로그아웃">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-3" />
+              <path d="M9 12h12" />
+              <path d="m17 8 4 4-4 4" />
+            </svg>
+          </a>
+          <button class="titlebar-action" type="button" aria-label="알림">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+              <path d="M10 21h4" />
+            </svg>
+          </button>
+          <button class="titlebar-action" type="button" aria-label="도구">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14.7 6.3a4 4 0 0 0-5 5L4 17v3h3l5.7-5.7a4 4 0 0 0 5-5l-2.8 2.8-3-3 2.8-2.8Z" />
+            </svg>
+          </button>
+          <button class="titlebar-action" type="button" aria-label="전체 메뉴">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 6h16" />
+              <path d="M4 12h16" />
+              <path d="M4 18h16" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace" aria-label="FingerSalesAI 작업 공간">
+        <section class="panel left-panel" data-panel="left">
+          <div class="panel-header">
+            <div>
+              <h1 id="canvas-title">고객</h1>
+            </div>
+            <button class="small-icon-btn maximize-panel-btn" type="button" data-focus-panel="left" aria-label="좌측 패널 확대">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15 3h6v6" />
+                <path d="m21 3-7 7" />
+                <path d="M9 21H3v-6" />
+                <path d="m3 21 7-7" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="canvas-area">
+            <div class="customer-table-wrap" aria-label="고객 정보 그리드">
+              <table class="customer-table">
+                <thead>
+                  <tr>
+                    <th>회사명</th>
+                    <th>이름</th>
+                    <th>직무</th>
+                    <th>직위</th>
+                    <th>휴대전화</th>
+                    <th>이메일</th>
+                    <th>홈페이지</th>
+                    <th>추가 정보</th>
+                    <th>등록 시간</th>
+                  </tr>
+                </thead>
+                <tbody id="customer-table-body">
+                  <tr class="empty-row">
+                    <td colspan="9">명함 인식 또는 고객 정보 추출 결과가 여기에 누적됩니다.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="detail-drawer">
+            <div>
+              <h2 id="customer-detail-title">최근 등록 고객</h2>
+            </div>
+            <dl class="detail-list" id="customer-detail-list">
+              <div>
+                <dt>상태</dt>
+                <dd>아직 등록된 고객 정보가 없습니다.</dd>
+              </div>
+            </dl>
+          </div>
+        </section>
+
+        <div class="splitter splitter-left" role="separator" aria-label="좌측 영역 크기 조절" tabindex="0"></div>
+
+        <section class="panel chat-panel" data-panel="chat">
+          <div class="panel-header chat-header">
+            <div class="chat-heading">
+              <div>
+                <h2>에이전트</h2>
+              </div>
+            </div>
+            <button class="small-icon-btn maximize-panel-btn" type="button" data-focus-panel="chat" aria-label="중앙 패널 확대">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15 3h6v6" />
+                <path d="m21 3-7 7" />
+                <path d="M9 21H3v-6" />
+                <path d="m3 21 7-7" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="chat-stream" aria-label="채팅 대화" data-drop-zone></div>
+
+          <form class="chat-input" enctype="multipart/form-data">
+            <input class="file-input" id="chat-file-input" type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt" aria-label="파일 첨부" />
+            <button class="attach-btn" type="button" aria-label="파일 추가" title="파일 추가">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14" />
+                <path d="M5 12h14" />
+              </svg>
+            </button>
+            <div class="composer-main">
+              <div class="attachment-preview" aria-live="polite"></div>
+              <input type="text" placeholder="고객, 일정, 제안서에 대해 질문하세요" aria-label="채팅 메시지" />
+              <p class="drop-hint">파일을 이 영역에 드래그하거나 + 버튼으로 첨부할 수 있습니다.</p>
+            </div>
+            <button class="send-btn" type="submit" aria-label="메시지 보내기">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m22 2-7 20-4-9-9-4 20-7Z" />
+                <path d="M22 2 11 13" />
+              </svg>
+            </button>
+          </form>
+        </section>
+
+        <div class="splitter splitter-right" role="separator" aria-label="우측 영역 크기 조절" tabindex="0"></div>
+
+        <aside class="panel right-panel" data-panel="right">
+          <section class="right-section plan-section" aria-label="실행 플랜">
+            <div class="right-section-header">
+              <div>
+                <h2>실행 플랜</h2>
+              </div>
+              <button class="small-icon-btn" type="button" aria-label="작업 추가">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14" />
+                  <path d="M5 12h14" />
+                </svg>
+              </button>
+            </div>
+            <div class="agent-stack" aria-live="polite"></div>
+          </section>
+
+          <section class="right-section log-section" aria-label="추론 로그">
+            <div class="right-section-header compact">
+              <div>
+                <h2>추론 로그</h2>
+              </div>
+            </div>
+            <ol class="log-list" aria-live="polite"></ol>
+          </section>
+
+          <section class="right-section schedule-section" aria-label="스케줄러">
+            <div class="right-section-header compact">
+              <div>
+                <h2>스케줄러</h2>
+              </div>
+            </div>
+            <ul class="task-list">
+              <li>
+                <time>10:30</time>
+                <span>신규 문의 리드 자동 분류</span>
+              </li>
+              <li>
+                <time>14:00</time>
+                <span>제안서 승인 요청</span>
+              </li>
+              <li>
+                <time>17:20</time>
+                <span>고객 응답 요약 리포트</span>
+              </li>
+            </ul>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script src="/script.js"></script>
+  </body>
+</html>
