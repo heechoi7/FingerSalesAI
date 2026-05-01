@@ -675,6 +675,29 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 - `uv run python -c "import main; print('app import ok')"` 통과
 - `extract_social_links` 수동 호출로 `kr.linkedin.com/in/...`, `www.linkedin.com/company/...`, `m.linkedin.com/in/...` 감지 확인
 
+### 2026-05-01: LinkedIn 상세 브리핑 및 저장 fallback 보강
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- `https://www.linkedin.com/in/hyundohbak/?locale=ko_KR` 입력이 일반 답변으로 빠지고 DB 저장이 누락되는 문제를 재점검했습니다.
+- SNS 링크 처리 시 Tavily 검색과 Gemini 정리를 사용해 이름, 회사, 직무, 직위, 이메일 후보, 요약, 영업 브리핑을 보강하도록 했습니다.
+- SNS 상세 브리핑을 채팅창에도 표시하고, 고객 컨텍스트에도 기억하도록 했습니다.
+- 브라우저가 예전 `script.js`를 캐시해 SNS 분기 로직을 못 쓰는 상황을 줄이기 위해 `/` 응답의 script URL에 파일 수정 시간 기반 `v` query를 붙였습니다.
+- `script.js`와 `styles.css` 정적 응답에 `Cache-Control: no-cache`를 적용했습니다.
+- 그래도 프론트가 일반 `/api/chat`으로 보내는 경우를 대비해, `/api/chat`도 SNS 링크를 감지하면 답변 생성 대신 SNS 브리핑/고객 저장 fallback을 수행하도록 했습니다.
+- `/api/chat` fallback 결과가 내려오면 프론트 고객 그리드에도 즉시 반영하도록 했습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- `extract_social_links` 수동 호출로 `https://www.linkedin.com/in/hyundohbak/?locale=ko_KR` 감지 확인
+
 ### 2026-05-01: 클라우드 SaaS 운영 기준 보안/안정성 보강
 
 변경 파일:

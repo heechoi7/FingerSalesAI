@@ -870,3 +870,9 @@ uv run python -c "import main; print('app import ok')"
 현재 한계:
 - SNS 공개 페이지를 직접 크롤링하지 않고 URL 구조에서 플랫폼, 핸들, 대상 유형을 우선 추출합니다.
 - 실제 이름, 회사, 직책을 더 정밀하게 채우려면 이후 SNS 공개 프로필 분석 또는 검색 기반 보강 단계를 추가합니다.
+
+보강된 LinkedIn 처리:
+- `/api/extract/sns`는 SNS URL 구조 분석 후 Tavily 검색과 Gemini 정리를 사용해 이름, 회사, 직무, 직위, 요약, 영업 브리핑을 보강합니다.
+- 프론트 캐시 문제로 SNS 링크가 `/api/chat`으로 들어와도 서버가 다시 SNS 링크를 감지해 고객 등록 fallback을 수행합니다.
+- `/` HTML 응답은 `script.js?v=<파일수정시간>` 형태로 내려가므로 최신 SNS 분기 로직이 브라우저에 반영되기 쉽습니다.
+- `script.js`와 `styles.css`는 `Cache-Control: no-cache`를 사용합니다.

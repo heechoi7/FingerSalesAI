@@ -865,13 +865,18 @@ async function importSnsLinks(text) {
     appendMessage("ai", buildSnsImportHtml(result.items || []), { html: true });
     (result.items || []).forEach((item) => {
       const source = `SNS · ${item.platform || "Unknown"}`;
-      rememberCardInfo({ name: source }, item.data || {}, "", item.customer || null);
+      rememberCardInfo({ name: source }, item.data || {}, item.briefing || "", item.customer || null);
       addCustomerRow(item.data || {}, source, {
         id: item.customer?.id,
         createdAt: item.customer?.created_at,
         customer: item.customer || null,
       });
     });
+    (result.items || [])
+      .filter((item) => item.briefing)
+      .forEach((item) => {
+        appendMessage("ai", buildBriefingHtml(item.briefing), { html: true });
+      });
     rememberMessage("assistant", `SNS 링크 등록 결과: ${JSON.stringify((result.items || []).map((item) => item.data || {}))}`);
   } catch (error) {
     loadingMessage.remove();
@@ -923,6 +928,17 @@ async function requestChatReply(text) {
     updatePlanStep(planSteps, "answer", "done", 100, "최신 정보 우선 규칙을 적용해 답변을 생성했습니다.");
     const reply = result.reply || "응답을 생성하지 못했습니다.";
     appendMessage("ai", reply, { richText: true });
+    if (result.sns_imported && Array.isArray(result.items)) {
+      result.items.forEach((item) => {
+        const source = `SNS · ${item.platform || "Unknown"}`;
+        rememberCardInfo({ name: source }, item.data || {}, item.briefing || "", item.customer || null);
+        addCustomerRow(item.data || {}, source, {
+          id: item.customer?.id,
+          createdAt: item.customer?.created_at,
+          customer: item.customer || null,
+        });
+      });
+    }
     rememberMessage("assistant", reply);
     addLog("Conversation Agent", "LLM 응답을 채팅창에 반영했습니다.", "done");
   } catch (error) {

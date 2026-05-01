@@ -422,11 +422,12 @@ def classify_social_link(url: str, platform: str) -> dict[str, Any]:
 
 def social_link_to_card_data(link: dict[str, Any]) -> dict[str, str]:
     platform = link["platform"]
-    display_name = link["display_name"]
+    enriched = link.get("enriched") or {}
+    display_name = enriched.get("contact_name") or link["display_name"]
     entity_type = link["entity_type"]
     is_company = entity_type in {"company", "channel", "blog"}
-    company_name = display_name
-    contact_name = "SNS 담당자 미확인" if is_company else display_name
+    company_name = enriched.get("company_name") or display_name
+    contact_name = enriched.get("contact_name") or ("SNS 담당자 미확인" if is_company else display_name)
     profile_label = {
         "company": "회사 SNS 프로필",
         "channel": "SNS 채널",
@@ -438,23 +439,91 @@ def social_link_to_card_data(link: dict[str, Any]) -> dict[str, str]:
     return {
         "회사명": company_name,
         "이름": contact_name,
-        "직무": profile_label,
-        "직위": platform,
+        "직무": enriched.get("job_title") or profile_label,
+        "직위": enriched.get("job_position") or platform,
         "휴대전화": "",
-        "이메일": "",
+        "이메일": enriched.get("email") or "",
         "홈페이지": link["url"],
         "SNS종류": platform,
         "SNS대상": entity_type,
         "SNS핸들": link.get("handle") or display_name,
         "SNS링크": link["url"],
+        "SNS요약": enriched.get("summary") or "",
     }
 
 
+def extract_json_object(text: str) -> dict[str, Any]:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if not match:
+            return {}
+        try:
+            return json.loads(match.group(0))
+        except Exception:
+            return {}
+
+
+def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
+    query = f"{link['url']} {link['platform']} {link.get('handle') or link.get('display_name')} profile company career"
+    try:
+        search_tool = TavilySearchResults(max_results=5)
+        search_results = search_tool.invoke({"query": query})
+    except Exception as error:
+        search_results = [{"error": str(error)}]
+
+    try:
+        model = create_gemini_model(temperature=0.1)
+        response = model.invoke(
+            [
+                SystemMessage(
+                    content=(
+                        "You extract CRM fields from public SNS/search snippets. "
+                        "Return only one JSON object. Do not wrap it in markdown. "
+                        "Use Korean for briefing. Use empty strings for unknown fields. "
+                        "JSON keys: contact_name, company_name, job_title, job_position, email, summary, briefing."
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        f"SNS link metadata:\n{json.dumps(link, ensure_ascii=False)}\n\n"
+                        f"Search results:\n{json.dumps(search_results, ensure_ascii=False)}\n\n"
+                        "Extract the most likely person/company CRM fields. "
+                        "briefing must include sales-relevant details, career context, likely organization, and follow-up angle. "
+                        "Do not invent unsupported emails or phone numbers."
+                    )
+                ),
+            ]
+        )
+        extracted = extract_json_object(content_to_text(response.content))
+    except Exception as error:
+        extracted = {"briefing": f"SNS 상세 브리핑 생성 중 오류가 발생했습니다: {error}"}
+
+    enriched = {
+        "contact_name": str(extracted.get("contact_name") or "").strip(),
+        "company_name": str(extracted.get("company_name") or "").strip(),
+        "job_title": str(extracted.get("job_title") or "").strip(),
+        "job_position": str(extracted.get("job_position") or "").strip(),
+        "email": str(extracted.get("email") or "").strip(),
+        "summary": str(extracted.get("summary") or "").strip(),
+        "briefing": str(extracted.get("briefing") or "").strip(),
+        "search_results": search_results,
+    }
+    return {**link, "enriched": enriched}
+
+
 def save_sns_customer(link: dict[str, Any], tenant_id: int, owner_user_id: int) -> dict[str, Any]:
-    data = social_link_to_card_data(link)
+    enriched_link = enrich_social_link(link)
+    data = social_link_to_card_data(enriched_link)
+    briefing = enriched_link.get("enriched", {}).get("briefing") or f"{link['platform']} 링크에서 생성한 SNS 기반 고객 후보입니다."
     customer = save_extracted_customer(
         data,
-        f"{link['platform']} 링크에서 생성한 SNS 기반 고객 후보입니다.",
+        briefing,
         f"SNS · {link['platform']}",
         tenant_id,
         owner_user_id,
@@ -464,8 +533,30 @@ def save_sns_customer(link: dict[str, Any], tenant_id: int, owner_user_id: int) 
         "entity_type": link["entity_type"],
         "url": link["url"],
         "data": data,
+        "briefing": briefing,
+        "enriched": enriched_link.get("enriched", {}),
         "customer": customer,
     }
+
+
+def build_sns_import_reply(items: list[dict[str, Any]]) -> str:
+    lines = ["SNS 링크를 분석해 고객 정보로 저장했습니다."]
+    for item in items:
+        data = item.get("data") or {}
+        name = data.get("이름") or "-"
+        company = data.get("회사명") or "-"
+        role = " / ".join(value for value in [data.get("직무"), data.get("직위")] if value) or "-"
+        lines.extend(
+            [
+                "",
+                f"• 고객: {company} / {name}",
+                f"• 역할: {role}",
+                f"• SNS: {item.get('platform')} ({item.get('url')})",
+            ]
+        )
+        if item.get("briefing"):
+            lines.extend(["", item["briefing"]])
+    return "\n".join(lines)
 
 
 def fetch_contact(cursor, contact_id: int, tenant_id: int, owner_user_id: int | None = None) -> dict[str, Any] | None:
@@ -1030,10 +1121,24 @@ async def delete_customer(customer_id: int, request: Request):
 
 @app.post("/api/chat")
 async def chat(chat_request: ChatRequest, request: Request):
-    require_session(request)
+    session = require_session(request)
     message = chat_request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
+
+    social_links = extract_social_links(message)
+    if social_links:
+        try:
+            items = [save_sns_customer(link, session["tenant_id"], session["user_id"]) for link in social_links]
+            return {
+                "success": True,
+                "reply": build_sns_import_reply(items),
+                "sns_imported": True,
+                "items": items,
+            }
+        except Exception as error:
+            print("SNS chat fallback failed:", error)
+            return {"success": False, "error": str(error)}
 
     try:
         model = create_gemini_model(temperature=0.3)
@@ -1089,12 +1194,16 @@ async def index(request: Request):
     if not session:
         return RedirectResponse("/login.html", status_code=303)
     html = (BASE_DIR / "index.html").read_text(encoding="utf-8")
+    script_version = int((BASE_DIR / "script.js").stat().st_mtime)
     session_script = (
         "<script>"
         f"window.__FSAI_SESSION__ = {json.dumps({**session, 'role_label': role_label(session['role'])}, ensure_ascii=False)};"
         "</script>"
     )
-    return html.replace('<script src="/script.js"></script>', f"{session_script}\n    <script src=\"/script.js\"></script>")
+    return html.replace(
+        '<script src="/script.js"></script>',
+        f"{session_script}\n    <script src=\"/script.js?v={script_version}\"></script>",
+    )
 
 
 @app.get("/login.html", response_class=HTMLResponse)
@@ -1119,7 +1228,10 @@ async def asset(asset_name: str):
     path = BASE_DIR / asset_name
     if not path.exists():
         raise HTTPException(status_code=404, detail="Not found")
-    return FileResponse(path)
+    response = FileResponse(path)
+    if asset_name in {"script.js", "styles.css"}:
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 if __name__ == "__main__":
