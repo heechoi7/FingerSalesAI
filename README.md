@@ -259,6 +259,13 @@ http://localhost:8000/
   - 명함 정보 추출
   - accounts/contacts에 저장
 
+- `POST /api/extract/sns`
+  - body: `message`
+  - 에이전트 입력창에 입력된 SNS 링크를 감지
+  - LinkedIn, Instagram, Facebook, X, YouTube, TikTok, GitHub, Naver Blog, Medium 등 지원 SNS를 플랫폼별로 구분
+  - SNS 링크를 명함 입력과 같은 고객/연락처 필드로 정규화
+  - accounts/contacts에 저장
+
 채팅:
 
 - `POST /api/chat`
@@ -624,6 +631,30 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 검증:
 - CSS/문서 변경으로 별도 코드 실행 검증은 필요하지 않습니다.
+
+### 2026-05-01: SNS 링크 기반 고객 등록 구현
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 에이전트 입력창에 SNS 링크를 입력하면 일반 채팅 응답 대신 SNS 고객 등록 흐름으로 분기하도록 했습니다.
+- `POST /api/extract/sns` API를 추가했습니다.
+- LinkedIn, Instagram, Facebook, X, YouTube, TikTok, GitHub, Naver Blog, Medium 링크를 감지하고 플랫폼별로 구분합니다.
+- `https://`가 없는 `linkedin.com/in/...` 형태도 SNS 링크로 감지합니다.
+- SNS 링크를 `회사명`, `이름`, `직무`, `직위`, `홈페이지`, `SNS종류`, `SNS대상`, `SNS핸들`, `SNS링크` 필드로 정규화합니다.
+- 정규화된 SNS 정보는 명함 입력과 같은 `save_extracted_customer` 경로를 사용해 `accounts`는 upsert, `contacts`는 insert합니다.
+- 프론트 실행 플랜에 SNS 구분, 프로필 정규화, 고객 등록 단계를 추가했습니다.
+- SNS 처리 결과를 채팅창과 고객 그리드에 즉시 반영하도록 했습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- `extract_social_links` 수동 호출로 LinkedIn 개인/회사, Instagram 링크 분류 확인
 
 ### 2026-05-01: 클라우드 SaaS 운영 기준 보안/안정성 보강
 

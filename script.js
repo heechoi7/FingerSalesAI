@@ -603,11 +603,79 @@ function createConversationPlan(text) {
   return steps;
 }
 
+function extractSocialUrls(text) {
+  const matches =
+    String(text || "").match(
+      /(?:https?:\/\/)?(?:www\.)?(?:m\.)?(?:linkedin\.com|facebook\.com|fb\.com|instagram\.com|x\.com|twitter\.com|threads\.net|youtube\.com|youtu\.be|tiktok\.com|github\.com|blog\.naver\.com|medium\.com)\/[^\s<>()"']*/gi,
+    ) || [];
+  const socialHostPattern =
+    /(^|\.)((linkedin|facebook|instagram|threads|youtube|youtu|tiktok|github|medium)\.com|fb\.com|x\.com|twitter\.com|youtu\.be|blog\.naver\.com)$/i;
+  const urls = [];
+  const seen = new Set();
+
+  matches.forEach((value) => {
+    const cleaned = value.replace(/[.,;:!?)]}>。；：，]+$/g, "");
+    try {
+      const parsed = new URL(/^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`);
+      const host = parsed.hostname.replace(/^www\./i, "").replace(/^m\./i, "");
+      if (!socialHostPattern.test(host)) return;
+      const normalized = `${parsed.protocol}//${host}${parsed.pathname.replace(/\/$/, "")}${parsed.search}`;
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      urls.push(normalized);
+    } catch (_error) {
+      // URL 생성에 실패한 텍스트는 일반 대화로 처리합니다.
+    }
+  });
+
+  return urls;
+}
+
+function createSnsPlan(text, urls) {
+  agentStack.innerHTML = "";
+  const summary = text.length > 52 ? `${text.slice(0, 52)}...` : text;
+
+  const requestCard = document.createElement("article");
+  requestCard.className = "agent-card upload-plan-card";
+  requestCard.innerHTML = `
+    <div>
+      <span class="agent-mark red"></span>
+      <strong>SNS 링크 입력</strong>
+    </div>
+    <p>${escapeHtml(summary)}</p>
+  `;
+  agentStack.append(requestCard);
+
+  const steps = [
+    ["detect", "SNS 구분", `${urls.length}개의 SNS 링크를 플랫폼별로 분류합니다.`, 20],
+    ["normalize", "프로필 정규화", "각 SNS 링크를 명함 입력과 같은 고객/연락처 필드로 변환합니다.", 0],
+    ["save", "고객 등록", "accounts와 contacts에 SNS 기반 고객 후보를 저장합니다.", 0],
+  ].map(([id, title, description, value]) => {
+    const card = document.createElement("article");
+    card.className = "agent-card pending";
+    card.dataset.step = id;
+    card.innerHTML = `
+      <div>
+        <span class="agent-mark blue"></span>
+        <strong>${title}</strong>
+        <small class="step-state">대기</small>
+      </div>
+      <p>${description}</p>
+      <progress value="${value}" max="100"></progress>
+    `;
+    agentStack.append(card);
+    return card;
+  });
+
+  scrollPanelToBottom(agentStack);
+  return steps;
+}
+
 function updatePlanStep(steps, stepId, state, value, logDetail) {
   const card = steps.find((item) => item.dataset.step === stepId);
   if (!card) return;
 
-  card.classList.remove("pending", "active", "done", "error");
+  card.classList.remove("pending", "active", "done", "error", "skipped");
   card.classList.add(state);
   card.querySelector(".step-state").textContent = state === "done" ? "완료" : state === "error" ? "오류" : state === "skipped" ? "생략" : "실행 중";
   card.querySelector("progress").value = value;
@@ -640,6 +708,23 @@ function buildCardInfoHtml(data) {
     .join("");
 
   return `<p>명함 이미지를 인식했습니다. 추출된 정보는 아래와 같습니다.</p><ul class="card-result-list">${items}</ul>`;
+}
+
+function buildSnsImportHtml(items) {
+  const rows = (items || [])
+    .map((item) => {
+      const data = item.data || {};
+      const label = `${item.platform || "SNS"} · ${data["회사명"] || data["이름"] || item.url}`;
+      return `
+        <li>
+          <strong>${escapeHtml(label)}</strong>
+          <span>${escapeHtml(item.url || data["홈페이지"] || "-")}</span>
+        </li>
+      `;
+    })
+    .join("");
+
+  return `<p>SNS 링크를 고객 후보로 정리해 저장했습니다.</p><ul class="card-result-list">${rows}</ul>`;
 }
 
 function buildBriefingHtml(briefing) {
@@ -743,6 +828,57 @@ async function processPendingFiles() {
 
     const imageUrl = await readFileAsDataUrl(file);
     await analyzeBusinessCard(file, imageUrl, { skipBriefing });
+  }
+}
+
+async function importSnsLinks(text) {
+  const urls = extractSocialUrls(text);
+  appendMessage("user", text);
+  rememberMessage("user", text);
+  questionSequence += 1;
+  addLogDivider(`SNS ${questionSequence}`);
+  const planSteps = createSnsPlan(text, urls);
+  addLog("SNS Agent", `${urls.length}개의 SNS 링크를 고객 등록 대상으로 감지했습니다.`);
+  const loadingMessage = appendMessage("ai", "SNS 링크를 플랫폼별로 구분하고 고객 후보로 저장하고 있습니다.");
+
+  updatePlanStep(planSteps, "detect", "done", 100, "LinkedIn, Instagram, Facebook, X, YouTube 등 지원 SNS 링크를 분류했습니다.");
+  updatePlanStep(planSteps, "normalize", "active", 50, "SNS 링크를 회사명, 이름, 직무, 홈페이지 필드로 정규화하고 있습니다.");
+
+  try {
+    const response = await apiFetch("/api/extract/sns", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message: text }),
+    });
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || "SNS 링크 처리 중 오류가 발생했습니다.");
+    }
+
+    loadingMessage.remove();
+    updatePlanStep(planSteps, "normalize", "done", 100, `${result.count || 0}개의 SNS 정보를 명함 입력 형식으로 변환했습니다.`);
+    updatePlanStep(planSteps, "save", "done", 100, "accounts와 contacts에 SNS 기반 고객 후보를 저장했습니다.");
+
+    appendMessage("ai", buildSnsImportHtml(result.items || []), { html: true });
+    (result.items || []).forEach((item) => {
+      const source = `SNS · ${item.platform || "Unknown"}`;
+      rememberCardInfo({ name: source }, item.data || {}, "", item.customer || null);
+      addCustomerRow(item.data || {}, source, {
+        id: item.customer?.id,
+        createdAt: item.customer?.created_at,
+        customer: item.customer || null,
+      });
+    });
+    rememberMessage("assistant", `SNS 링크 등록 결과: ${JSON.stringify((result.items || []).map((item) => item.data || {}))}`);
+  } catch (error) {
+    loadingMessage.remove();
+    updatePlanStep(planSteps, "normalize", "error", 100, error.message);
+    updatePlanStep(planSteps, "save", "error", 0, "이전 단계 오류로 SNS 고객 등록을 완료하지 못했습니다.");
+    appendMessage("ai", `SNS 링크를 고객 정보로 저장하지 못했습니다. ${error.message}`);
+    addLog("SNS Agent", error.message, "error");
   }
 }
 
@@ -854,7 +990,11 @@ chatInput?.addEventListener("submit", async (event) => {
     }
 
     input.value = "";
-    await requestChatReply(text);
+    if (extractSocialUrls(text).length > 0) {
+      await importSnsLinks(text);
+    } else {
+      await requestChatReply(text);
+    }
   } finally {
     isSubmitting = false;
     sendButton.disabled = false;

@@ -4,8 +4,10 @@ import hashlib
 import hmac
 import os
 import json
+import re
 import time
 from typing import Any
+from urllib.parse import unquote, urlparse, urlunparse
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
@@ -75,10 +77,38 @@ CARD_BASE_KEYS = {
     "홈페이지": "homepage",
 }
 
+SOCIAL_PLATFORM_HOSTS = {
+    "linkedin.com": "LinkedIn",
+    "facebook.com": "Facebook",
+    "fb.com": "Facebook",
+    "instagram.com": "Instagram",
+    "x.com": "X",
+    "twitter.com": "X",
+    "threads.net": "Threads",
+    "youtube.com": "YouTube",
+    "youtu.be": "YouTube",
+    "tiktok.com": "TikTok",
+    "github.com": "GitHub",
+    "blog.naver.com": "Naver Blog",
+    "medium.com": "Medium",
+}
+
+SOCIAL_URL_RE = re.compile(
+    r"(?:https?://)?(?:www\.)?(?:m\.)?"
+    r"(?:linkedin\.com|facebook\.com|fb\.com|instagram\.com|x\.com|twitter\.com|threads\.net|"
+    r"youtube\.com|youtu\.be|tiktok\.com|github\.com|blog\.naver\.com|medium\.com)"
+    r"/[^\s<>()\"']*",
+    re.IGNORECASE,
+)
+
 
 class ChatRequest(BaseModel):
     message: str
     context: dict[str, Any] | None = None
+
+
+class SnsLinksRequest(BaseModel):
+    message: str
 
 
 class LoginRequest(BaseModel):
@@ -309,6 +339,133 @@ def normalize_card_data(data: dict[str, Any] | None) -> dict[str, Any]:
     }
     normalized["card_data"] = source
     return normalized
+
+
+def clean_url(value: str) -> str:
+    return value.strip().rstrip(".,;:!?)]}>\u3002\uff0c\uff1b\uff1a")
+
+
+def social_platform_for_host(host: str) -> str | None:
+    normalized_host = host.lower().removeprefix("www.").removeprefix("m.")
+    for domain, platform in SOCIAL_PLATFORM_HOSTS.items():
+        if normalized_host == domain or normalized_host.endswith(f".{domain}"):
+            return platform
+    return None
+
+
+def normalize_social_url(value: str) -> str:
+    cleaned = clean_url(value)
+    if not re.match(r"https?://", cleaned, re.IGNORECASE):
+        cleaned = f"https://{cleaned}"
+    parsed = urlparse(cleaned)
+    path = parsed.path.rstrip("/") or "/"
+    host = parsed.netloc.lower().removeprefix("www.").removeprefix("m.")
+    return urlunparse((parsed.scheme.lower(), host, path, "", parsed.query, ""))
+
+
+def extract_social_links(text: str) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for match in SOCIAL_URL_RE.findall(text or ""):
+        url = normalize_social_url(match)
+        parsed = urlparse(url)
+        platform = social_platform_for_host(parsed.netloc)
+        if not platform or url in seen:
+            continue
+        seen.add(url)
+        links.append(classify_social_link(url, platform))
+    return links
+
+
+def readable_handle(value: str) -> str:
+    text = unquote(value or "").strip().strip("@")
+    text = re.sub(r"[-_]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or "SNS 프로필"
+
+
+def classify_social_link(url: str, platform: str) -> dict[str, Any]:
+    parsed = urlparse(url)
+    parts = [part for part in parsed.path.split("/") if part]
+    entity_type = "profile"
+    handle = ""
+
+    if platform == "LinkedIn" and parts:
+        if parts[0] in {"company", "school", "showcase"} and len(parts) > 1:
+            entity_type = "company"
+            handle = parts[1]
+        elif parts[0] == "in" and len(parts) > 1:
+            entity_type = "person"
+            handle = parts[1]
+    elif platform == "YouTube":
+        entity_type = "channel"
+        handle = parts[0] if parts else parsed.netloc
+        if handle in {"channel", "c", "user"} and len(parts) > 1:
+            handle = parts[1]
+    elif platform == "Naver Blog":
+        entity_type = "blog"
+        handle = parts[0] if parts else parsed.netloc
+    elif parts:
+        handle = parts[0]
+        if handle.lower() in {"share", "posts", "reel", "p", "status", "photo", "watch"} and len(parts) > 1:
+            handle = parts[1]
+
+    display_name = readable_handle(handle or parsed.netloc)
+    return {
+        "url": url,
+        "platform": platform,
+        "entity_type": entity_type,
+        "handle": handle.strip("@"),
+        "display_name": display_name,
+    }
+
+
+def social_link_to_card_data(link: dict[str, Any]) -> dict[str, str]:
+    platform = link["platform"]
+    display_name = link["display_name"]
+    entity_type = link["entity_type"]
+    is_company = entity_type in {"company", "channel", "blog"}
+    company_name = display_name
+    contact_name = "SNS 담당자 미확인" if is_company else display_name
+    profile_label = {
+        "company": "회사 SNS 프로필",
+        "channel": "SNS 채널",
+        "blog": "블로그",
+        "person": "개인 SNS 프로필",
+        "profile": "SNS 프로필",
+    }.get(entity_type, "SNS 프로필")
+
+    return {
+        "회사명": company_name,
+        "이름": contact_name,
+        "직무": profile_label,
+        "직위": platform,
+        "휴대전화": "",
+        "이메일": "",
+        "홈페이지": link["url"],
+        "SNS종류": platform,
+        "SNS대상": entity_type,
+        "SNS핸들": link.get("handle") or display_name,
+        "SNS링크": link["url"],
+    }
+
+
+def save_sns_customer(link: dict[str, Any], tenant_id: int, owner_user_id: int) -> dict[str, Any]:
+    data = social_link_to_card_data(link)
+    customer = save_extracted_customer(
+        data,
+        f"{link['platform']} 링크에서 생성한 SNS 기반 고객 후보입니다.",
+        f"SNS · {link['platform']}",
+        tenant_id,
+        owner_user_id,
+    )
+    return {
+        "platform": link["platform"],
+        "entity_type": link["entity_type"],
+        "url": link["url"],
+        "data": data,
+        "customer": customer,
+    }
 
 
 def fetch_contact(cursor, contact_id: int, tenant_id: int, owner_user_id: int | None = None) -> dict[str, Any] | None:
@@ -737,6 +894,21 @@ async def extract_business_card(
         }
     except Exception as error:
         print("Business card extraction failed:", error)
+        return {"success": False, "error": str(error)}
+
+
+@app.post("/api/extract/sns")
+async def extract_sns_links(payload: SnsLinksRequest, request: Request):
+    session = require_session(request)
+    links = extract_social_links(payload.message)
+    if not links:
+        raise HTTPException(status_code=400, detail="지원하는 SNS 링크를 찾지 못했습니다.")
+
+    try:
+        items = [save_sns_customer(link, session["tenant_id"], session["user_id"]) for link in links]
+        return {"success": True, "count": len(items), "items": items}
+    except Exception as error:
+        print("SNS extraction failed:", error)
         return {"success": False, "error": str(error)}
 
 

@@ -848,3 +848,25 @@ uv run python -c "import main; print('app import ok')"
 - `docs/SECURITY.md`
 - `docs/UI_GUIDE.md`
 - `docs/AI_AGENT_CONTEXT.md`
+
+## 11. SNS 링크 기반 고객 등록 흐름
+
+목적:
+- 명함 이미지뿐 아니라 에이전트 입력창에 붙여 넣은 SNS 링크도 고객 등록 입력으로 처리합니다.
+- 이 흐름은 제품 방향인 Zero Input CRM과 Conversational Sales Agent를 위한 입력 채널 확장입니다.
+
+처리 흐름:
+1. 사용자가 에이전트 입력창에 SNS 링크를 입력합니다.
+2. `script.js`가 LinkedIn, Instagram, Facebook, X, YouTube, TikTok, GitHub, Naver Blog, Medium 링크를 감지합니다.
+3. SNS 링크가 있으면 일반 `/api/chat` 요청 대신 `/api/extract/sns`로 전송합니다.
+4. 서버는 세션 쿠키를 검증합니다.
+5. `main.py`가 URL을 플랫폼별로 구분하고 개인/회사/채널/블로그/프로필 유형을 판단합니다.
+6. SNS 링크를 `회사명`, `이름`, `직무`, `직위`, `홈페이지`, `SNS종류`, `SNS대상`, `SNS핸들`, `SNS링크` 필드로 정규화합니다.
+7. 정규화된 데이터는 명함 입력과 같은 `save_extracted_customer` 경로를 사용합니다.
+8. 같은 `tenant_id` 안에 같은 회사명이 있으면 `accounts`는 신규 insert하지 않고 update합니다.
+9. `contacts`에는 매번 새 연락처 행을 insert합니다.
+10. 프론트는 저장 결과를 채팅창, 고객 그리드, 선택 고객 상세 정보에 즉시 반영합니다.
+
+현재 한계:
+- SNS 공개 페이지를 직접 크롤링하지 않고 URL 구조에서 플랫폼, 핸들, 대상 유형을 우선 추출합니다.
+- 실제 이름, 회사, 직책을 더 정밀하게 채우려면 이후 SNS 공개 프로필 분석 또는 검색 기반 보강 단계를 추가합니다.
