@@ -18,6 +18,7 @@ const adminState = {
   ],
   statuses: ["active", "invited", "locked", "disabled"],
   teams: [],
+  users: [],
   stageCodes: ["lead", "prospect", "opportunity", "proposal", "contract", "success"],
   codeGroups: [],
 };
@@ -31,6 +32,26 @@ const menuMeta = {
   stages: ["영업 단계 설정", "파이프라인 단계, 성공 확률, 활성 여부를 관리합니다."],
   logs: ["사용로그", "관리자 변경 이력과 감사 로그를 확인합니다."],
 };
+
+const settingsPathByMenu = {
+  users: "/settings/users",
+  teams: "/settings/teams",
+  stages: "/settings/pipeline",
+};
+
+const menuBySettingsPath = {
+  "/settings/users": "users",
+  "/settings/teams": "teams",
+  "/settings/pipeline": "stages",
+};
+
+function menuFromLocation() {
+  return menuBySettingsPath[window.location.pathname] || "company";
+}
+
+function setActiveMenuButton(menu) {
+  adminMenuButtons.forEach((item) => item.classList.toggle("active", item.dataset.adminMenu === menu));
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -102,6 +123,24 @@ function optionHtml(items, selected, emptyLabel = "선택 안 함") {
 function teamOptions(selected) {
   const items = adminState.teams.map((team) => ({ value: team.id, label: team.name }));
   return optionHtml(items, selected, "소속 없음");
+}
+
+function userOptions(selected, emptyLabel = "선택 안 함") {
+  const items = adminState.users.map((user) => ({
+    value: user.id,
+    label: `${user.name || user.email} (${user.email})`,
+  }));
+  return optionHtml(items, selected, emptyLabel);
+}
+
+function memberOptions(selectedIds = []) {
+  const selected = new Set((selectedIds || []).map((id) => String(id)));
+  return adminState.users
+    .map((user) => {
+      const label = `${user.name || user.email} (${user.email})`;
+      return `<option value="${escapeHtml(user.id)}" ${selected.has(String(user.id)) ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
 }
 
 function renderSummary(summary) {
@@ -186,6 +225,7 @@ async function loadTeams() {
   const result = await response.json();
   if (!response.ok || !result.success) throw new Error(result.detail || result.error || "팀 목록을 불러오지 못했습니다.");
   adminState.teams = result.teams || [];
+  adminState.users = result.users || adminState.users;
   return adminState.teams;
 }
 
@@ -197,6 +237,7 @@ async function renderUsers() {
   if (!response.ok || !result.success) throw new Error(result.detail || result.error || "사용자 목록을 불러오지 못했습니다.");
   adminState.roles = result.roles || adminState.roles;
   adminState.statuses = result.statuses || adminState.statuses;
+  adminState.users = result.users || [];
   const rows = (result.users || [])
     .map(
       (user) => `
@@ -214,6 +255,14 @@ async function renderUsers() {
     )
     .join("");
   adminView.innerHTML = `
+    <form class="admin-inline-form admin-invite-form" id="invite-user-form">
+      <input name="name" placeholder="사용자 이름" required />
+      <input name="email" type="email" placeholder="이메일" required />
+      <input name="phone" placeholder="전화번호" />
+      <select name="team_id">${teamOptions("")}</select>
+      <select name="role">${optionHtml(adminState.roles.filter((role) => role.value !== "owner"), "sales", "역할")}</select>
+      <button type="submit">초대</button>
+    </form>
     <div class="admin-table-wrap">
       <table class="admin-table">
         <thead><tr><th>이름</th><th>이메일</th><th>전화번호</th><th>팀</th><th>역할</th><th>상태</th><th>마지막 로그인</th><th></th></tr></thead>
@@ -221,6 +270,29 @@ async function renderUsers() {
       </table>
     </div>
   `;
+  document.querySelector("#invite-user-form")?.addEventListener("submit", handleAdminSubmit(inviteUser));
+}
+
+async function inviteUser(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const payload = {
+    name: form.get("name"),
+    email: form.get("email"),
+    phone: form.get("phone"),
+    team_id: form.get("team_id") ? Number(form.get("team_id")) : null,
+    role: form.get("role"),
+  };
+  const response = await adminApi("/api/admin/users/invite", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(result.detail || result.error || "사용자를 초대하지 못했습니다.");
+  showAdminMessage(`사용자를 초대했습니다. 임시 비밀번호: ${result.temporary_password}`, "success");
+  await loadSummary();
+  await renderUsers();
 }
 
 async function saveUser(row) {
@@ -334,6 +406,95 @@ async function deleteTeam(row) {
   if (!response.ok || !result.success) throw new Error(result.detail || result.error || "팀을 삭제하지 못했습니다.");
   showAdminMessage("팀을 삭제했습니다.", "success");
   await loadSummary();
+  await renderTeams();
+}
+
+function selectedValues(select) {
+  return Array.from(select?.selectedOptions || []).map((option) => Number(option.value)).filter(Boolean);
+}
+
+function renderTeamForm() {
+  return `
+    <form class="admin-inline-form admin-team-form" id="team-form">
+      <input name="name" placeholder="팀 이름" required />
+      <select name="parent_team_id">${teamOptions("")}</select>
+      <select name="leader_user_id">${userOptions("", "팀장 없음")}</select>
+      <select name="member_user_ids" multiple size="3">${memberOptions([])}</select>
+      <input name="description" placeholder="팀 설명" />
+      <input name="sort_order" type="number" value="0" aria-label="정렬 순서" />
+      <button type="submit">추가</button>
+    </form>
+  `;
+}
+
+function teamPayloadFrom(container) {
+  return {
+    name: container.querySelector('[name="name"]').value,
+    parent_team_id: container.querySelector('[name="parent_team_id"]').value ? Number(container.querySelector('[name="parent_team_id"]').value) : null,
+    leader_user_id: container.querySelector('[name="leader_user_id"]').value ? Number(container.querySelector('[name="leader_user_id"]').value) : null,
+    member_user_ids: selectedValues(container.querySelector('[name="member_user_ids"]')),
+    description: container.querySelector('[name="description"]').value,
+    sort_order: Number(container.querySelector('[name="sort_order"]').value || 0),
+  };
+}
+
+async function renderTeams() {
+  setLoading();
+  const teams = await loadTeams();
+  const rows = teams
+    .map(
+      (team) => `
+        <tr data-team-id="${escapeHtml(team.id)}">
+          <td><input name="name" value="${escapeHtml(team.name)}" /></td>
+          <td><select name="parent_team_id">${teamOptions(team.parent_team_id)}</select></td>
+          <td><select name="leader_user_id">${userOptions(team.leader_user_id, "팀장 없음")}</select></td>
+          <td><select name="member_user_ids" multiple size="4">${memberOptions(team.member_user_ids || [])}</select></td>
+          <td><input name="description" value="${escapeHtml(team.description)}" /></td>
+          <td><input name="sort_order" type="number" value="${escapeHtml(team.sort_order || 0)}" /></td>
+          <td>${escapeHtml(team.member_count || 0)}</td>
+          <td>
+            <button type="button" data-action="save-team">저장</button>
+            <button type="button" data-action="delete-team">삭제</button>
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+  adminView.innerHTML = `
+    ${renderTeamForm()}
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead><tr><th>팀 이름</th><th>상위 팀</th><th>팀장</th><th>팀원</th><th>설명</th><th>정렬</th><th>사용자</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="8">등록된 팀이 없습니다.</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+  document.querySelector("#team-form")?.addEventListener("submit", handleAdminSubmit(createTeam));
+}
+
+async function createTeam(event) {
+  event.preventDefault();
+  const response = await adminApi("/api/admin/teams", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(teamPayloadFrom(event.currentTarget)),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(result.detail || result.error || "팀을 추가하지 못했습니다.");
+  showAdminMessage("팀을 추가했습니다.", "success");
+  await loadSummary();
+  await renderTeams();
+}
+
+async function saveTeam(row) {
+  const response = await adminApi(`/api/admin/teams/${row.dataset.teamId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(teamPayloadFrom(row)),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(result.detail || result.error || "팀을 저장하지 못했습니다.");
+  showAdminMessage("팀 정보를 저장했습니다.", "success");
   await renderTeams();
 }
 
@@ -656,6 +817,61 @@ async function deleteStage(row) {
   await renderStages();
 }
 
+async function renderStages() {
+  setLoading();
+  const response = await adminApi("/api/admin/pipeline-stages");
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(result.detail || result.error || "영업 단계를 불러오지 못했습니다.");
+  adminState.stageCodes = result.stage_codes || adminState.stageCodes;
+  const defaultRows = (result.default_stages || [])
+    .map((stage) => `<li><code>${escapeHtml(stage.stage_code)}</code> ${escapeHtml(stage.name)}</li>`)
+    .join("");
+  const rows = (result.stages || [])
+    .map(
+      (stage) => `
+        <tr data-stage-id="${escapeHtml(stage.id)}">
+          <td><select name="stage_code">${stageOptions(stage.stage_code)}</select></td>
+          <td><input name="name" value="${escapeHtml(stage.name)}" /></td>
+          <td><input name="description" value="${escapeHtml(stage.description)}" /></td>
+          <td><input name="probability_percent" type="number" min="0" max="100" value="${escapeHtml(stage.probability_percent || 0)}" /></td>
+          <td><input name="sort_order" type="number" value="${escapeHtml(stage.sort_order || 0)}" /></td>
+          <td><input name="is_active" type="checkbox" ${stage.is_active ? "checked" : ""} /></td>
+          <td>
+            <button type="button" data-action="save-stage">저장</button>
+            <button type="button" data-action="delete-stage">삭제</button>
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+  adminView.innerHTML = `
+    <div class="admin-default-stage-box">
+      <div>
+        <strong>기본 영업 단계</strong>
+        <ul>${defaultRows}</ul>
+      </div>
+      <button type="button" data-action="create-default-stages">기본 단계 생성</button>
+    </div>
+    ${renderStageForm()}
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead><tr><th>코드</th><th>이름</th><th>설명</th><th>확률</th><th>정렬</th><th>활성</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7">등록된 영업 단계가 없습니다.</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+  document.querySelector("#stage-form")?.addEventListener("submit", handleAdminSubmit(createStage));
+}
+
+async function createDefaultStages() {
+  const response = await adminApi("/api/admin/pipeline-stages/defaults", { method: "POST" });
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(result.detail || result.error || "기본 영업 단계를 생성하지 못했습니다.");
+  showAdminMessage(`${result.count || 0}개의 기본 영업 단계를 생성했습니다.`, "success");
+  await loadSummary();
+  await renderStages();
+}
+
 function renderSimpleTable(headers, rows) {
   return `
     <div class="admin-table-wrap">
@@ -710,11 +926,20 @@ async function renderCurrentMenu() {
 
 adminMenuButtons.forEach((button) => {
   button.addEventListener("click", async () => {
-    adminMenuButtons.forEach((item) => item.classList.remove("active"));
-    button.classList.add("active");
     adminState.menu = button.dataset.adminMenu;
+    setActiveMenuButton(adminState.menu);
+    const nextPath = settingsPathByMenu[adminState.menu] || "/admin";
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({ menu: adminState.menu }, "", nextPath);
+    }
     await renderCurrentMenu();
   });
+});
+
+window.addEventListener("popstate", async () => {
+  adminState.menu = menuFromLocation();
+  setActiveMenuButton(adminState.menu);
+  await renderCurrentMenu();
 });
 
 adminRefreshButton?.addEventListener("click", async () => {
@@ -733,6 +958,7 @@ adminView.addEventListener("click", async (event) => {
     if (action === "delete-code-group") await deleteCodeGroup(event.target.dataset.codeGroup);
     if (action === "save-code-item") await saveCodeItem(row);
     if (action === "delete-code-item") await deleteCodeItem(row);
+    if (action === "create-default-stages") await createDefaultStages();
     if (action === "save-stage") await saveStage(row);
     if (action === "delete-stage") await deleteStage(row);
   } catch (error) {
@@ -741,6 +967,8 @@ adminView.addEventListener("click", async (event) => {
 });
 
 async function initAdmin() {
+  adminState.menu = menuFromLocation();
+  setActiveMenuButton(adminState.menu);
   if (window.__FSAI_SESSION__) {
     const session = window.__FSAI_SESSION__;
     adminSessionLabel.textContent = `${session.tenant_name || session.tenant_code || "테넌트"} / ${session.user_name || session.email || "사용자"} / ${session.role_label || session.role || "역할"}`;

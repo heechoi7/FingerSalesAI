@@ -249,6 +249,9 @@ http://localhost:8000/
   - 우측 상단 도구 버튼에서 진입하는 별도 관리자 페이지
   - `owner`, `admin` 역할만 접근 가능
 
+- `/settings/users`, `/settings/teams`, `/settings/pipeline`
+  - 관리자 페이지의 사용자 관리, 팀 관리, 영업 단계 설정 화면으로 직접 진입하는 설정 라우트
+
 - `GET /api/admin/summary`
   - 관리자 홈 요약, 테넌트 정보, 사용자/팀/영업 단계/감사 로그 수 반환
 
@@ -260,8 +263,15 @@ http://localhost:8000/
   - 현재 테넌트 사용자 목록 조회 및 이름/전화번호/팀/역할/상태 수정
   - 비밀번호 해시는 응답이나 감사 로그에 포함하지 않음
 
+- `POST /api/admin/users/invite`
+  - 사용자 초대
+  - 초대 사용자는 `invited` 상태로 생성하고 임시 비밀번호를 반환
+  - 역할은 `owner`를 제외한 관리자 허용 역할만 지정 가능
+
 - `GET /api/admin/teams`, `POST /api/admin/teams`, `PUT /api/admin/teams/{team_id}`, `DELETE /api/admin/teams/{team_id}`
   - 팀 목록 조회, 추가, 수정, soft delete
+  - `users.team_id`로 팀원 배정
+  - 현재 `teams`에 팀장 컬럼이 없으므로 팀장 지정은 `tenant_settings.setting_key = team_leaders` JSON 매핑으로 관리
 
 - `GET /api/admin/roles`
   - 현재 `users.role` enum과 서버 역할 정의 기준의 권한 설명 반환
@@ -272,6 +282,9 @@ http://localhost:8000/
 
 - `GET /api/admin/pipeline-stages`, `POST /api/admin/pipeline-stages`, `PUT /api/admin/pipeline-stages/{stage_id}`, `DELETE /api/admin/pipeline-stages/{stage_id}`
   - `pipeline_stages` 기반 영업 단계 조회/추가/수정/soft delete
+
+- `POST /api/admin/pipeline-stages/defaults`
+  - 기본 영업 단계 `lead`, `prospect`, `opportunity`, `proposal`, `contract`, `success` 중 없는 단계만 생성
 
 - `GET /api/admin/logs`
   - `audit_logs` 기반 사용로그 조회
@@ -348,6 +361,36 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 설정 라우트 기반 관리자 기능 확장
+
+변경 파일:
+- `main.py`
+- `admin.js`
+- `styles.css`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- `/settings/users`, `/settings/teams`, `/settings/pipeline` 라우트를 추가해 관리자 세부 화면으로 직접 진입할 수 있게 했습니다.
+- 관리자 메뉴 클릭 시 해당 설정 라우트로 브라우저 history를 갱신하도록 변경했습니다.
+- 사용자 관리에 사용자 초대 기능을 추가했습니다.
+- `POST /api/admin/users/invite`는 초대 사용자를 `invited` 상태로 만들고 임시 비밀번호를 반환합니다.
+- 기존 사용자 관리 목록에서 역할 변경, 팀 배정, 상태 변경을 계속 지원합니다.
+- 팀 관리에서 팀장 지정과 팀원 다중 배정을 지원하도록 확장했습니다.
+- 현재 `teams` 테이블에 팀장 컬럼이 없으므로 팀장 지정은 `tenant_settings.setting_key = team_leaders` JSON 매핑으로 저장합니다.
+- 팀원 배정은 기존 `users.team_id`를 사용합니다.
+- 영업 단계 설정에 기본 단계 생성 버튼과 `POST /api/admin/pipeline-stages/defaults` API를 추가했습니다.
+- 기본 단계는 `lead`, `prospect`, `opportunity`, `proposal`, `contract`, `success`이며 이미 존재하는 단계는 중복 생성하지 않습니다.
+
+검증:
+- `node --check admin.js` 통과
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py tests/test_security_regressions.py` 통과
+- `uv run python -m unittest discover -s tests` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- FastAPI TestClient로 `finger / james@crm.co.kr` 로그인 후 `/settings/users`, `/settings/teams`, `/settings/pipeline`, `/api/admin/users`, `/api/admin/teams`, `/api/admin/pipeline-stages` 응답 확인
 
 ### 2026-05-01: 관리자 코드 관리 메뉴 추가
 

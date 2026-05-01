@@ -156,6 +156,16 @@ class SecurityRegressionTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 400)
 
+    def test_team_leader_setting_parser_keeps_integer_mapping(self):
+        leaders = main.parse_team_leaders_setting({"leaders": {"10": 25, "bad": "x"}})
+
+        self.assertEqual(leaders, {"10": 25})
+
+    def test_default_pipeline_stage_codes_match_expected_order(self):
+        codes = [stage["stage_code"] for stage in main.DEFAULT_PIPELINE_STAGES]
+
+        self.assertEqual(codes, ["lead", "prospect", "opportunity", "proposal", "contract", "success"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1389,6 +1389,7 @@ progress::-webkit-progress-value {
 .admin-form button,
 .admin-inline-form button,
 .admin-table button,
+.admin-default-stage-box button,
 .admin-danger-button {
   border: 1px solid var(--line-strong);
   background: #fff;
@@ -1408,6 +1409,7 @@ progress::-webkit-progress-value {
 .admin-form button:hover,
 .admin-inline-form button:hover,
 .admin-table button:hover,
+.admin-default-stage-box button:hover,
 .admin-danger-button:hover {
   border-color: rgba(215, 53, 53, 0.45);
   color: var(--brand-dark);
@@ -1631,8 +1633,54 @@ progress::-webkit-progress-value {
 
 .code-group-form,
 .code-group-edit-form,
-.code-item-form {
+.code-item-form,
+.admin-invite-form,
+.admin-team-form {
   grid-template-columns: 1fr 1fr 1.4fr 88px auto auto;
+}
+
+.admin-team-form {
+  grid-template-columns: 1fr 1fr 1fr 1.4fr 1.3fr 88px auto;
+}
+
+.admin-table select[multiple],
+.admin-inline-form select[multiple] {
+  min-height: 88px;
+  padding: 6px;
+}
+
+.admin-default-stage-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.admin-default-stage-box strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--charcoal);
+}
+
+.admin-default-stage-box ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-default-stage-box code {
+  color: var(--brand-dark);
+  font-weight: 900;
 }
 
 .admin-danger-button {
@@ -1734,6 +1782,9 @@ progress::-webkit-progress-value {
   .code-group-form,
   .code-group-edit-form,
   .code-item-form,
+  .admin-invite-form,
+  .admin-team-form,
+  .admin-default-stage-box,
   .admin-code-group-header {
     grid-template-columns: 1fr;
   }

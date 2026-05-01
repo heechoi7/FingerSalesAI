@@ -7,6 +7,7 @@ import html as html_lib
 import os
 import json
 import re
+import secrets
 import time
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
@@ -60,6 +61,15 @@ USER_STATUS_VALUES = {"active", "invited", "locked", "disabled"}
 TENANT_STATUS_VALUES = {"active", "trial", "suspended", "closed"}
 PIPELINE_STAGE_CODES = {"lead", "prospect", "opportunity", "proposal", "contract", "success"}
 CUSTOM_CODES_SETTING_KEY = "custom_codes"
+TEAM_LEADERS_SETTING_KEY = "team_leaders"
+DEFAULT_PIPELINE_STAGES = [
+    {"stage_code": "lead", "name": "잠재고객", "description": "초기 유입 또는 관심이 확인된 고객", "probability_percent": 5, "sort_order": 10},
+    {"stage_code": "prospect", "name": "가망고객", "description": "영업 대상성과 접근 가능성이 확인된 고객", "probability_percent": 15, "sort_order": 20},
+    {"stage_code": "opportunity", "name": "기회인지", "description": "구체적인 니즈와 영업 기회가 식별된 단계", "probability_percent": 35, "sort_order": 30},
+    {"stage_code": "proposal", "name": "제안/견적", "description": "제안서 또는 견적이 준비되거나 전달된 단계", "probability_percent": 60, "sort_order": 40},
+    {"stage_code": "contract", "name": "계약/실행", "description": "계약 협의, 체결, 실행 준비 단계", "probability_percent": 85, "sort_order": 50},
+    {"stage_code": "success", "name": "사후관리", "description": "계약 이후 고객 성공과 후속 영업 관리 단계", "probability_percent": 100, "sort_order": 60},
+]
 ADMIN_ENTITY_SELECTS = {
     "users": "id, tenant_id, team_id, email, name, phone, role, status, last_login_at, created_at, updated_at, deleted_at",
     "teams": "id, tenant_id, parent_team_id, name, description, sort_order, created_at, updated_at, deleted_at",
@@ -190,10 +200,20 @@ class AdminUserPayload(BaseModel):
     team_id: int | None = None
 
 
+class AdminInviteUserPayload(BaseModel):
+    email: str
+    name: str
+    phone: str = ""
+    role: str = "sales"
+    team_id: int | None = None
+
+
 class AdminTeamPayload(BaseModel):
     name: str = ""
     description: str = ""
     parent_team_id: int | None = None
+    leader_user_id: int | None = None
+    member_user_ids: list[int] = Field(default_factory=list)
     sort_order: int = 0
 
 
@@ -514,6 +534,111 @@ def fetch_custom_codes(cursor, tenant_id: int) -> tuple[int | None, dict[str, An
     if not row:
         return None, {"groups": []}
     return row["id"], parse_custom_codes_setting(row.get("setting_value"))
+
+
+def parse_team_leaders_setting(value: Any) -> dict[str, int]:
+    if value in (None, ""):
+        return {}
+    if isinstance(value, dict):
+        source = value
+    else:
+        try:
+            source = json.loads(value)
+        except Exception:
+            source = {}
+    leaders = source.get("leaders") if isinstance(source, dict) else {}
+    if not isinstance(leaders, dict):
+        return {}
+    result: dict[str, int] = {}
+    for team_id, user_id in leaders.items():
+        try:
+            result[str(int(team_id))] = int(user_id)
+        except Exception:
+            continue
+    return result
+
+
+def fetch_team_leaders(cursor, tenant_id: int) -> tuple[int | None, dict[str, int]]:
+    cursor.execute(
+        """
+        SELECT id, setting_value
+        FROM tenant_settings
+        WHERE tenant_id = %s
+          AND setting_key = %s
+        LIMIT 1
+        """,
+        (tenant_id, TEAM_LEADERS_SETTING_KEY),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None, {}
+    return row["id"], parse_team_leaders_setting(row.get("setting_value"))
+
+
+def save_team_leaders(cursor, tenant_id: int, leaders: dict[str, int]) -> int:
+    normalized = {str(int(team_id)): int(user_id) for team_id, user_id in leaders.items() if user_id}
+    setting_value = json.dumps({"leaders": normalized}, ensure_ascii=False)
+    cursor.execute(
+        """
+        SELECT id
+        FROM tenant_settings
+        WHERE tenant_id = %s
+          AND setting_key = %s
+        LIMIT 1
+        """,
+        (tenant_id, TEAM_LEADERS_SETTING_KEY),
+    )
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            """
+            UPDATE tenant_settings
+            SET setting_value = %s,
+                description = %s
+            WHERE id = %s
+              AND tenant_id = %s
+            """,
+            (setting_value, "관리자 팀장 지정 정보", row["id"], tenant_id),
+        )
+        return row["id"]
+    cursor.execute(
+        """
+        INSERT INTO tenant_settings (tenant_id, setting_key, setting_value, description)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (tenant_id, TEAM_LEADERS_SETTING_KEY, setting_value, "관리자 팀장 지정 정보"),
+    )
+    return cursor.lastrowid
+
+
+def ensure_admin_user_belongs(cursor, user_id: int, tenant_id: int) -> dict[str, Any]:
+    return ensure_admin_target_belongs(cursor, "users", user_id, tenant_id)
+
+
+def validate_team_members(cursor, user_ids: list[int], tenant_id: int) -> list[int]:
+    unique_ids = sorted({int(user_id) for user_id in user_ids if user_id})
+    if not unique_ids:
+        return []
+    placeholders = ",".join(["%s"] * len(unique_ids))
+    cursor.execute(
+        f"""
+        SELECT id
+        FROM users
+        WHERE tenant_id = %s
+          AND deleted_at IS NULL
+          AND id IN ({placeholders})
+        """,
+        (tenant_id, *unique_ids),
+    )
+    found = {row["id"] for row in cursor.fetchall()}
+    missing = set(unique_ids) - found
+    if missing:
+        raise HTTPException(status_code=400, detail="팀원으로 배정할 수 없는 사용자가 포함되어 있습니다.")
+    return unique_ids
+
+
+def temporary_invite_password() -> str:
+    return secrets.token_urlsafe(12)
 
 
 def internal_error_response(message: str = "요청 처리 중 오류가 발생했습니다.", status_code: int = 500) -> JSONResponse:
@@ -1885,6 +2010,60 @@ async def admin_users(request: Request):
     }
 
 
+@app.post("/api/admin/users/invite")
+async def admin_invite_user(payload: AdminInviteUserPayload, request: Request):
+    session = require_admin_session(request)
+    email = payload.email.strip().lower()
+    name = payload.name.strip()
+    role = payload.role.strip()
+    if not email or not name:
+        raise HTTPException(status_code=400, detail="초대할 사용자 이름과 이메일을 입력해 주세요.")
+    if role not in USER_ROLES or role == "owner":
+        raise HTTPException(status_code=400, detail="초대 가능한 사용자 역할을 확인해 주세요.")
+
+    temporary_password = temporary_invite_password()
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        if payload.team_id is not None:
+            ensure_admin_target_belongs(cursor, "teams", payload.team_id, session["tenant_id"])
+        cursor.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE tenant_id = %s
+              AND LOWER(email) = %s
+              AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            (session["tenant_id"], email),
+        )
+        if cursor.fetchone():
+            raise HTTPException(status_code=409, detail="이미 등록된 사용자 이메일입니다.")
+        cursor.execute(
+            """
+            INSERT INTO users (tenant_id, team_id, email, password_hash, name, phone, role, status, last_login_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'invited', NULL)
+            """,
+            (
+                session["tenant_id"],
+                payload.team_id,
+                email,
+                hash_password(temporary_password),
+                name,
+                none_if_blank(payload.phone),
+                role,
+            ),
+        )
+        user_id = cursor.lastrowid
+        cursor.execute(
+            "SELECT id, email, name, phone, role, status, team_id, last_login_at, created_at, updated_at FROM users WHERE id = %s",
+            (user_id,),
+        )
+        after = cursor.fetchone()
+        write_audit_log(cursor, session, "invite", "user", user_id, None, after, request)
+    return {"success": True, "user": admin_json_row(after), "temporary_password": temporary_password}
+
+
 @app.put("/api/admin/users/{user_id}")
 async def admin_update_user(user_id: int, payload: AdminUserPayload, request: Request):
     session = require_admin_session(request)
@@ -1958,7 +2137,36 @@ async def admin_teams(request: Request):
             (session["tenant_id"],),
         )
         teams = cursor.fetchall()
-    return {"success": True, "teams": admin_json_rows(teams)}
+        _setting_id, leader_map = fetch_team_leaders(cursor, session["tenant_id"])
+        cursor.execute(
+            """
+            SELECT id, name, email, team_id, role, status
+            FROM users
+            WHERE tenant_id = %s
+              AND deleted_at IS NULL
+            ORDER BY name, email
+            """,
+            (session["tenant_id"],),
+        )
+        users = cursor.fetchall()
+
+    user_by_id = {row["id"]: admin_json_row(row) for row in users}
+    members_by_team: dict[int, list[dict[str, Any]]] = {}
+    for user in users:
+        if user.get("team_id"):
+            members_by_team.setdefault(user["team_id"], []).append(admin_json_row(user))
+
+    enriched_teams = []
+    for team in teams:
+        row = admin_json_row(team)
+        leader_user_id = leader_map.get(str(team["id"]))
+        row["leader_user_id"] = leader_user_id
+        row["leader_name"] = user_by_id.get(leader_user_id, {}).get("name", "") if leader_user_id else ""
+        row["leader_email"] = user_by_id.get(leader_user_id, {}).get("email", "") if leader_user_id else ""
+        row["members"] = members_by_team.get(team["id"], [])
+        row["member_user_ids"] = [member["id"] for member in row["members"]]
+        enriched_teams.append(row)
+    return {"success": True, "teams": enriched_teams, "users": admin_json_rows(users)}
 
 
 @app.post("/api/admin/teams")
@@ -1971,6 +2179,11 @@ async def admin_create_team(payload: AdminTeamPayload, request: Request):
         cursor = connection.cursor(dictionary=True)
         if payload.parent_team_id is not None:
             ensure_admin_target_belongs(cursor, "teams", payload.parent_team_id, session["tenant_id"])
+        member_user_ids = validate_team_members(cursor, payload.member_user_ids, session["tenant_id"])
+        if payload.leader_user_id is not None:
+            ensure_admin_user_belongs(cursor, payload.leader_user_id, session["tenant_id"])
+            if payload.leader_user_id not in member_user_ids:
+                member_user_ids.append(payload.leader_user_id)
         cursor.execute(
             """
             INSERT INTO teams (tenant_id, parent_team_id, name, description, sort_order)
@@ -1979,6 +2192,16 @@ async def admin_create_team(payload: AdminTeamPayload, request: Request):
             (session["tenant_id"], payload.parent_team_id, name, none_if_blank(payload.description), payload.sort_order),
         )
         team_id = cursor.lastrowid
+        if member_user_ids:
+            placeholders = ",".join(["%s"] * len(member_user_ids))
+            cursor.execute(
+                f"UPDATE users SET team_id = %s WHERE tenant_id = %s AND id IN ({placeholders})",
+                (team_id, session["tenant_id"], *member_user_ids),
+            )
+        if payload.leader_user_id is not None:
+            _setting_id, leader_map = fetch_team_leaders(cursor, session["tenant_id"])
+            leader_map[str(team_id)] = payload.leader_user_id
+            save_team_leaders(cursor, session["tenant_id"], leader_map)
         after = ensure_admin_target_belongs(cursor, "teams", team_id, session["tenant_id"])
         write_audit_log(cursor, session, "create", "team", team_id, None, after, request)
     return {"success": True, "team": admin_json_row(after)}
@@ -1997,6 +2220,11 @@ async def admin_update_team(team_id: int, payload: AdminTeamPayload, request: Re
         before = ensure_admin_target_belongs(cursor, "teams", team_id, session["tenant_id"])
         if payload.parent_team_id is not None:
             ensure_admin_target_belongs(cursor, "teams", payload.parent_team_id, session["tenant_id"])
+        member_user_ids = validate_team_members(cursor, payload.member_user_ids, session["tenant_id"])
+        if payload.leader_user_id is not None:
+            ensure_admin_user_belongs(cursor, payload.leader_user_id, session["tenant_id"])
+            if payload.leader_user_id not in member_user_ids:
+                member_user_ids.append(payload.leader_user_id)
         cursor.execute(
             """
             UPDATE teams
@@ -2010,8 +2238,30 @@ async def admin_update_team(team_id: int, payload: AdminTeamPayload, request: Re
             """,
             (payload.parent_team_id, name, none_if_blank(payload.description), payload.sort_order, team_id, session["tenant_id"]),
         )
+        cursor.execute("UPDATE users SET team_id = NULL WHERE tenant_id = %s AND team_id = %s", (session["tenant_id"], team_id))
+        if member_user_ids:
+            placeholders = ",".join(["%s"] * len(member_user_ids))
+            cursor.execute(
+                f"UPDATE users SET team_id = %s WHERE tenant_id = %s AND id IN ({placeholders})",
+                (team_id, session["tenant_id"], *member_user_ids),
+            )
+        _setting_id, leader_map = fetch_team_leaders(cursor, session["tenant_id"])
+        if payload.leader_user_id is None:
+            leader_map.pop(str(team_id), None)
+        else:
+            leader_map[str(team_id)] = payload.leader_user_id
+        save_team_leaders(cursor, session["tenant_id"], leader_map)
         after = ensure_admin_target_belongs(cursor, "teams", team_id, session["tenant_id"])
-        write_audit_log(cursor, session, "update", "team", team_id, before, after, request)
+        write_audit_log(
+            cursor,
+            session,
+            "update",
+            "team",
+            team_id,
+            {**before, "leader_map": leader_map.get(str(team_id)), "member_user_ids": []},
+            {**after, "leader_user_id": payload.leader_user_id, "member_user_ids": member_user_ids},
+            request,
+        )
     return {"success": True, "team": admin_json_row(after)}
 
 
@@ -2022,6 +2272,9 @@ async def admin_delete_team(team_id: int, request: Request):
         cursor = connection.cursor(dictionary=True)
         before = ensure_admin_target_belongs(cursor, "teams", team_id, session["tenant_id"])
         cursor.execute("UPDATE users SET team_id = NULL WHERE tenant_id = %s AND team_id = %s", (session["tenant_id"], team_id))
+        _setting_id, leader_map = fetch_team_leaders(cursor, session["tenant_id"])
+        leader_map.pop(str(team_id), None)
+        save_team_leaders(cursor, session["tenant_id"], leader_map)
         cursor.execute(
             "UPDATE teams SET deleted_at = NOW(6) WHERE id = %s AND tenant_id = %s AND deleted_at IS NULL",
             (team_id, session["tenant_id"]),
@@ -2118,7 +2371,50 @@ async def admin_pipeline_stages(request: Request):
             (session["tenant_id"],),
         )
         stages = cursor.fetchall()
-    return {"success": True, "stages": admin_json_rows(stages), "stage_codes": sorted(PIPELINE_STAGE_CODES)}
+    return {"success": True, "stages": admin_json_rows(stages), "stage_codes": sorted(PIPELINE_STAGE_CODES), "default_stages": DEFAULT_PIPELINE_STAGES}
+
+
+@app.post("/api/admin/pipeline-stages/defaults")
+async def admin_create_default_pipeline_stages(request: Request):
+    session = require_admin_session(request)
+    created: list[dict[str, Any]] = []
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT stage_code
+            FROM pipeline_stages
+            WHERE tenant_id = %s
+              AND deleted_at IS NULL
+            """,
+            (session["tenant_id"],),
+        )
+        existing = {row["stage_code"] for row in cursor.fetchall()}
+        for stage in DEFAULT_PIPELINE_STAGES:
+            if stage["stage_code"] in existing:
+                continue
+            cursor.execute(
+                """
+                INSERT INTO pipeline_stages (
+                    tenant_id, stage_code, name, description, probability_percent, sort_order, is_active
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 1)
+                """,
+                (
+                    session["tenant_id"],
+                    stage["stage_code"],
+                    stage["name"],
+                    stage["description"],
+                    stage["probability_percent"],
+                    stage["sort_order"],
+                ),
+            )
+            stage_id = cursor.lastrowid
+            after = ensure_admin_target_belongs(cursor, "pipeline_stages", stage_id, session["tenant_id"])
+            created.append(admin_json_row(after))
+        if created:
+            write_audit_log(cursor, session, "create_defaults", "pipeline_stage", None, None, {"created": created}, request)
+    return {"success": True, "created": created, "count": len(created)}
 
 
 @app.post("/api/admin/pipeline-stages")
@@ -2573,7 +2869,8 @@ async def index(request: Request):
 
 
 @app.get("/admin", response_class=HTMLResponse)
-async def admin_page(request: Request):
+@app.get("/settings/{section}", response_class=HTMLResponse)
+async def admin_page(request: Request, section: str = ""):
     session = get_session(request)
     if not session:
         return RedirectResponse("/login.html", status_code=303)

@@ -385,6 +385,12 @@ FSAI_EXTRA_ENV_PATH=
 
 우측 상단 도구 아이콘은 `/admin` 별도 관리자 페이지로 이동합니다.
 
+직접 진입 가능한 설정 라우트:
+
+- `/settings/users`: 사용자 관리
+- `/settings/teams`: 영업팀 관리
+- `/settings/pipeline`: 영업 프로세스 단계 관리
+
 접근 권한:
 
 - `owner`
@@ -557,8 +563,11 @@ FSAI_EXTRA_ENV_PATH=
 
 - 사용자 관리
   - `GET /api/admin/users`
+  - `POST /api/admin/users/invite`
   - `PUT /api/admin/users/{user_id}`
   - `users`의 이름, 전화번호, 팀, 역할, 상태를 관리
+  - 사용자 초대 시 `invited` 상태 사용자와 임시 비밀번호를 생성
+  - `owner` 역할은 초대 API에서 지정할 수 없음
   - `password_hash`는 API 응답과 감사 로그에 포함하지 않음
   - 자기 자신의 역할/상태 변경은 서버에서 차단
 
@@ -568,6 +577,8 @@ FSAI_EXTRA_ENV_PATH=
   - `PUT /api/admin/teams/{team_id}`
   - `DELETE /api/admin/teams/{team_id}`
   - `teams`를 기준으로 팀 추가/수정/soft delete 수행
+  - 팀원 배정은 `users.team_id`를 사용
+  - 현재 `teams` 테이블에 팀장 컬럼이 없으므로 팀장 지정은 `tenant_settings.setting_key = team_leaders` JSON 매핑으로 저장
   - 팀 삭제 시 해당 팀 소속 사용자의 `team_id`를 `NULL`로 변경
 
 - 권한 관리
@@ -587,10 +598,13 @@ FSAI_EXTRA_ENV_PATH=
 
 - 영업 단계 설정
   - `GET /api/admin/pipeline-stages`
+  - `POST /api/admin/pipeline-stages/defaults`
   - `POST /api/admin/pipeline-stages`
   - `PUT /api/admin/pipeline-stages/{stage_id}`
   - `DELETE /api/admin/pipeline-stages/{stage_id}`
   - `pipeline_stages`를 기준으로 단계 코드, 이름, 설명, 기본 성공 확률, 정렬, 활성 여부를 관리
+  - 기본 단계는 `lead: 잠재고객`, `prospect: 가망고객`, `opportunity: 기회인지`, `proposal: 제안/견적`, `contract: 계약/실행`, `success: 사후관리`
+  - 기본 단계 생성 API는 이미 존재하는 단계 코드는 중복 생성하지 않음
 
 - 사용로그
   - `GET /api/admin/logs`
