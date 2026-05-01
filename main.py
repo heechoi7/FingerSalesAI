@@ -14,7 +14,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
@@ -50,6 +50,9 @@ TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true
 ALLOW_EXISTING_TENANT_SELF_JOIN = os.getenv("ALLOW_EXISTING_TENANT_SELF_JOIN", "false").lower() == "true"
 TENANT_JOIN_CODE = os.getenv("TENANT_JOIN_CODE", "")
 TENANT_SELF_JOIN_ROLES = {"sales", "viewer"}
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
+MAX_SNS_LINKS_PER_REQUEST = int(os.getenv("MAX_SNS_LINKS_PER_REQUEST", "3"))
+SOCIAL_FETCH_TIMEOUT_SECONDS = float(os.getenv("SOCIAL_FETCH_TIMEOUT_SECONDS", "3"))
 _auth_attempts: dict[str, list[float]] = {}
 
 if IS_PRODUCTION and len(SESSION_SECRET) < 32:
@@ -231,8 +234,50 @@ def read_session_token(token: str | None) -> dict[str, Any] | None:
     return payload
 
 
+def active_session_from_db(session: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not session:
+        return None
+    try:
+        tenant_id = int(session.get("tenant_id"))
+        user_id = int(session.get("user_id"))
+    except Exception:
+        return None
+
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                u.id AS user_id,
+                u.tenant_id,
+                u.email,
+                u.name AS user_name,
+                u.role,
+                u.status AS user_status,
+                t.tenant_code,
+                t.name AS tenant_name,
+                t.status AS tenant_status
+            FROM users u
+            JOIN tenants t
+              ON t.id = u.tenant_id
+             AND t.deleted_at IS NULL
+            WHERE u.id = %s
+              AND u.tenant_id = %s
+              AND u.deleted_at IS NULL
+            LIMIT 1
+            """,
+            (user_id, tenant_id),
+        )
+        row = cursor.fetchone()
+
+    if not row or row["user_status"] != "active" or row["tenant_status"] not in ("active", "trial"):
+        return None
+    return public_session(row)
+
+
 def get_session(request: Request) -> dict[str, Any] | None:
-    return read_session_token(request.cookies.get(SESSION_COOKIE_NAME))
+    token_session = read_session_token(request.cookies.get(SESSION_COOKIE_NAME))
+    return active_session_from_db(token_session)
 
 
 def require_session(request: Request) -> dict[str, Any]:
@@ -240,6 +285,28 @@ def require_session(request: Request) -> dict[str, Any]:
     if not session:
         raise HTTPException(status_code=401, detail="Login required")
     return session
+
+
+def internal_error_response(message: str = "요청 처리 중 오류가 발생했습니다.", status_code: int = 500) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"success": False, "error": message})
+
+
+def enforce_content_length(request: Request, max_bytes: int) -> None:
+    content_length = request.headers.get("content-length")
+    if not content_length:
+        return
+    try:
+        if int(content_length) > max_bytes:
+            raise HTTPException(status_code=413, detail=f"업로드 파일은 {max_bytes // (1024 * 1024)}MB 이하만 허용됩니다.")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Content-Length 헤더가 올바르지 않습니다.")
+
+
+async def read_upload_limited(file: UploadFile, max_bytes: int) -> bytes:
+    contents = await file.read(max_bytes + 1)
+    if len(contents) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"업로드 파일은 {max_bytes // (1024 * 1024)}MB 이하만 허용됩니다.")
+    return contents
 
 
 def verify_password(password: str, password_hash: str | None) -> bool:
@@ -586,7 +653,7 @@ def fetch_social_public_metadata(link: dict[str, Any]) -> dict[str, str]:
                     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
                 },
             )
-            with urlopen(request, timeout=6) as response:
+            with urlopen(request, timeout=SOCIAL_FETCH_TIMEOUT_SECONDS) as response:
                 raw = response.read(300_000)
                 charset = response.headers.get_content_charset() or "utf-8"
             try:
@@ -1010,12 +1077,13 @@ def upsert_account(cursor, payload: CustomerPayload, tenant_id: int) -> int | No
         SELECT id
         FROM accounts
         WHERE tenant_id = %s
+          AND owner_user_id = %s
           AND name = %s
           AND deleted_at IS NULL
         ORDER BY id
         LIMIT 1
         """,
-        (tenant_id, company_name),
+        (tenant_id, payload.owner_user_id, company_name),
     )
     account = cursor.fetchone()
     account_values = (
@@ -1039,8 +1107,9 @@ def upsert_account(cursor, payload: CustomerPayload, tenant_id: int) -> int | No
                 owner_user_id = COALESCE(%s, owner_user_id)
             WHERE id = %s
               AND tenant_id = %s
+              AND owner_user_id = %s
             """,
-            (*account_values, account["id"], tenant_id),
+            (*account_values, account["id"], tenant_id, payload.owner_user_id),
         )
         return account["id"]
 
@@ -1357,9 +1426,10 @@ async def extract_business_card(
     session = require_session(request)
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="이미지 파일만 명함 인식 분석을 실행할 수 있습니다.")
+    enforce_content_length(request, MAX_UPLOAD_BYTES)
 
     try:
-        contents = await file.read()
+        contents = await read_upload_limited(file, MAX_UPLOAD_BYTES)
         result = app_graph.invoke(
             {
                 "image_bytes": contents,
@@ -1422,9 +1492,11 @@ async def extract_business_card(
             if result.get("is_business_card", False)
             else None,
         }
+    except HTTPException:
+        raise
     except Exception as error:
         print("Business card extraction failed:", error)
-        return {"success": False, "error": str(error)}
+        return internal_error_response("이미지 분석 중 오류가 발생했습니다.")
 
 
 @app.post("/api/extract/sns")
@@ -1433,24 +1505,32 @@ async def extract_sns_links(payload: SnsLinksRequest, request: Request):
     links = extract_social_links(payload.message)
     if not links:
         raise HTTPException(status_code=400, detail="지원하는 SNS 링크를 찾지 못했습니다.")
+    if len(links) > MAX_SNS_LINKS_PER_REQUEST:
+        raise HTTPException(status_code=400, detail=f"SNS 링크는 한 번에 최대 {MAX_SNS_LINKS_PER_REQUEST}개까지 처리할 수 있습니다.")
 
     try:
         items = [save_sns_customer(link, session["tenant_id"], session["user_id"]) for link in links]
         saved_count = sum(1 for item in items if item.get("saved"))
         pending_count = sum(1 for item in items if item.get("needs_confirmation"))
         return {"success": True, "count": saved_count, "pending_count": pending_count, "items": items}
+    except HTTPException:
+        raise
     except Exception as error:
         print("SNS extraction failed:", error)
-        return {"success": False, "error": str(error)}
+        return internal_error_response("SNS 링크 처리 중 오류가 발생했습니다.")
 
 
 @app.get("/api/db/health")
 async def db_health():
-    with db_connection() as connection:
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute("SELECT DATABASE() AS database_name, VERSION() AS version")
-        result = cursor.fetchone()
-        return {"success": True, "tenant_id": resolve_tenant_id(), **result}
+    try:
+        with db_connection() as connection:
+            cursor = connection.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        return {"success": True, "status": "ok"}
+    except Exception as error:
+        print("DB health check failed:", error)
+        return internal_error_response("DB 상태를 확인할 수 없습니다.", status_code=503)
 
 
 @app.get("/api/customers")
@@ -1569,6 +1649,8 @@ async def chat(chat_request: ChatRequest, request: Request):
 
     social_links = extract_social_links(message)
     if social_links:
+        if len(social_links) > MAX_SNS_LINKS_PER_REQUEST:
+            raise HTTPException(status_code=400, detail=f"SNS 링크는 한 번에 최대 {MAX_SNS_LINKS_PER_REQUEST}개까지 처리할 수 있습니다.")
         try:
             items = [save_sns_customer(link, session["tenant_id"], session["user_id"]) for link in social_links]
             saved_count = sum(1 for item in items if item.get("saved"))
@@ -1581,9 +1663,11 @@ async def chat(chat_request: ChatRequest, request: Request):
                 "pending_count": pending_count,
                 "items": items,
             }
+        except HTTPException:
+            raise
         except Exception as error:
             print("SNS chat fallback failed:", error)
-            return {"success": False, "error": str(error)}
+            return internal_error_response("SNS 링크 처리 중 오류가 발생했습니다.")
 
     try:
         model = create_gemini_model(temperature=0.3)
@@ -1628,9 +1712,11 @@ async def chat(chat_request: ChatRequest, request: Request):
         )
         reply = content_to_text(response["messages"][-1].content).strip()
         return {"success": True, "reply": reply}
+    except HTTPException:
+        raise
     except Exception as error:
         print("Chat failed:", error)
-        return {"success": False, "error": str(error)}
+        return internal_error_response("답변 생성 중 오류가 발생했습니다.")
 
 
 @app.get("/", response_class=HTMLResponse)

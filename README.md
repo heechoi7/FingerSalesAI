@@ -96,6 +96,9 @@ MYSQL_POOL_SIZE=10
 MYSQL_CONNECTION_TIMEOUT=10
 ALLOW_EXISTING_TENANT_SELF_JOIN=false
 TENANT_JOIN_CODE=
+MAX_UPLOAD_BYTES=5242880
+MAX_SNS_LINKS_PER_REQUEST=3
+SOCIAL_FETCH_TIMEOUT_SECONDS=3
 ```
 
 주의:
@@ -104,6 +107,9 @@ TENANT_JOIN_CODE=
 - `APP_ENV=production`에서는 `APP_SESSION_SECRET`이 32자 이상이어야 서버가 시작됩니다.
 - `ALLOW_EXISTING_TENANT_SELF_JOIN=false`가 기본이며, 기존 테넌트 가입은 관리자 초대/가입 코드 방식으로 제한해야 합니다.
 - `MYSQL_TENANT_ID`는 로그인 이전 기본값 또는 로컬 기본값 용도였고, 현재 후속 작업 API는 로그인 세션의 `tenant_id`를 우선 사용합니다.
+- `MAX_UPLOAD_BYTES`는 이미지 업로드 최대 크기입니다. 기본값은 5MB입니다.
+- `MAX_SNS_LINKS_PER_REQUEST`는 SNS 링크 처리 요청 1회당 최대 링크 수입니다. 기본값은 3개입니다.
+- `SOCIAL_FETCH_TIMEOUT_SECONDS`는 SNS 공개 메타데이터 후보 URL 1개당 fetch timeout입니다. 기본값은 3초입니다.
 
 ## 실행 방법
 
@@ -150,8 +156,8 @@ http://localhost:8000/
 1. 명함 이미지 업로드
 2. `graph.py`의 LangGraph 워크플로가 명함 여부와 필드 추출
 3. `main.py`의 `/api/extract`가 로그인 세션을 확인
-4. 회사명 기준으로 `accounts` 조회
-5. 같은 `tenant_id` 안에 같은 회사명이 있으면 `accounts`는 신규 insert하지 않고 새 값으로 update
+4. 회사명과 로그인 사용자 ID 기준으로 `accounts` 조회
+5. 같은 `tenant_id`, `owner_user_id` 안에 같은 회사명이 있으면 `accounts`는 신규 insert하지 않고 새 값으로 update
 6. 같은 회사명이 없으면 `accounts`에 신규 고객사 insert
 7. `contacts`에는 항상 새 연락처 행 insert
 8. insert된 연락처를 `accounts`와 join해 프론트에 반환
@@ -199,6 +205,8 @@ http://localhost:8000/
 
 세션 확인:
 - `/api/auth/me`는 현재 로그인 사용자와 테넌트 정보를 반환합니다.
+- 세션 쿠키가 유효해도 API 요청마다 `users`와 `tenants`의 현재 상태를 다시 확인합니다.
+- 삭제/비활성 사용자, 중지된 테넌트의 기존 쿠키는 더 이상 보호 API를 통과하지 못합니다.
 - 메인 화면은 이 정보를 읽어 상단에 사용자 이름, 역할, 테넌트 이름을 표시합니다.
 
 로그아웃:
@@ -244,10 +252,10 @@ http://localhost:8000/
   - 로그인 세션의 `tenant_id`, `user_id(owner_user_id)` 안에서 특정 연락처 조회
 
 - `POST /api/customers`
-  - 세션의 `tenant_id`, `user_id`를 사용해 고객사 upsert + 연락처 insert
+  - 세션의 `tenant_id`, `user_id`를 사용해 사용자 소유 고객사 upsert + 연락처 insert
 
 - `PUT /api/customers/{customer_id}`
-  - 세션의 `tenant_id`, `user_id`를 사용해 고객사 upsert + 연락처 update
+  - 세션의 `tenant_id`, `user_id`를 사용해 사용자 소유 고객사 upsert + 연락처 update
 
 - `DELETE /api/customers/{customer_id}`
   - 실제 삭제가 아니라 `contacts.deleted_at = NOW(6)` 소프트 삭제
@@ -264,7 +272,8 @@ http://localhost:8000/
   - 에이전트 입력창에 입력된 SNS 링크를 감지
   - LinkedIn, Instagram, Facebook, X, YouTube, TikTok, GitHub, Naver Blog, Medium 등 지원 SNS를 플랫폼별로 구분
   - SNS 링크를 명함 입력과 같은 고객/연락처 필드로 정규화
-  - accounts/contacts에 저장
+  - 이름이 확인된 항목만 accounts/contacts에 저장
+  - 한 번에 처리 가능한 링크 수는 `MAX_SNS_LINKS_PER_REQUEST`로 제한
 
 채팅:
 
@@ -763,6 +772,33 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 - `uv run python -m py_compile main.py database.py graph.py` 통과
 - LinkedIn URL slug `%ED%9D%AC%EC%A7%84-%EA%B9%80-9b0b62278`에서 내부 유니코드 기준 `희진 김` 추출 확인
 - 공개 메타데이터가 없어도 이름형 LinkedIn URL slug는 `name_verified=True`, `name_source=linkedin_profile_url_slug`로 처리되는 것 확인
+
+### 2026-05-01: PR 리뷰 기반 SaaS 보안/안정성 보강
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `.env.example`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 세션 쿠키 서명과 만료만 확인하던 구조를 보강해, 보호 API 요청마다 `users`와 `tenants`의 현재 상태를 DB에서 다시 확인하도록 했습니다.
+- 비활성/삭제 사용자 또는 active/trial이 아닌 테넌트의 기존 세션 쿠키는 더 이상 보호 API를 통과하지 못합니다.
+- `accounts` upsert 범위를 `tenant_id + owner_user_id + 회사명`으로 좁혀 같은 테넌트의 다른 사용자가 같은 회사명을 저장해도 고객사 정보가 서로 덮어쓰기 되지 않도록 했습니다.
+- 공개 `/api/db/health` 응답에서 DB명, MySQL 버전, 기본 테넌트 ID 노출을 제거하고 단순 상태만 반환하도록 했습니다.
+- 이미지 업로드는 `MAX_UPLOAD_BYTES` 기준으로 제한하고, 초과 시 `413`을 반환하도록 했습니다.
+- SNS 링크 처리는 요청당 `MAX_SNS_LINKS_PER_REQUEST`개로 제한하고, 공개 메타데이터 fetch timeout을 `SOCIAL_FETCH_TIMEOUT_SECONDS`로 관리하도록 했습니다.
+- 예외 응답은 내부 오류 문자열을 그대로 사용자에게 반환하지 않고, sanitized 메시지와 적절한 HTTP status를 반환하도록 정리했습니다.
+- 프론트가 FastAPI `detail` 오류 메시지도 사용자에게 표시하도록 에러 메시지 처리를 보강했습니다.
+- 세션 상태 재검증, 업로드 크기 제한, LinkedIn slug 파싱을 검증하는 `unittest` 회귀 테스트를 추가했습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- `uv run python -m unittest discover -s tests` 통과
 
 ### 2026-05-01: 클라우드 SaaS 운영 기준 보안/안정성 보강
 

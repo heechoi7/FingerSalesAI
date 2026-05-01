@@ -161,6 +161,10 @@ function redirectToLogin() {
   window.location.replace("/login.html");
 }
 
+function apiErrorMessage(result, fallback) {
+  return result?.error || result?.detail || fallback;
+}
+
 async function apiFetch(url, options = {}) {
   const response = await fetch(url, {
     credentials: "same-origin",
@@ -778,7 +782,7 @@ async function analyzeBusinessCard(file, imageUrl, options = {}) {
     const result = await response.json();
 
     if (!response.ok || !result.success) {
-      throw new Error(result.error || "명함 분석 중 오류가 발생했습니다.");
+      throw new Error(apiErrorMessage(result, "명함 분석 중 오류가 발생했습니다."));
     }
 
     loadingMessage.remove();
@@ -890,7 +894,7 @@ async function importSnsLinks(text) {
     const result = await response.json();
 
     if (!response.ok || !result.success) {
-      throw new Error(result.error || "SNS 링크 처리 중 오류가 발생했습니다.");
+      throw new Error(apiErrorMessage(result, "SNS 링크 처리 중 오류가 발생했습니다."));
     }
 
     loadingMessage.remove();
@@ -965,7 +969,7 @@ async function requestChatReply(text) {
     const result = await response.json();
 
     if (!response.ok || !result.success) {
-      throw new Error(result.error || "대화 응답 생성 중 오류가 발생했습니다.");
+      throw new Error(apiErrorMessage(result, "대화 응답 생성 중 오류가 발생했습니다."));
     }
 
     loadingMessage.remove();

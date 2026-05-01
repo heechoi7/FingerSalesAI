@@ -300,9 +300,9 @@ FSAI_EXTRA_ENV_PATH=
 2. 프론트가 `/api/extract`로 이미지를 전송합니다.
 3. 서버는 세션 쿠키를 검증합니다.
 4. `graph.py`가 명함 정보를 추출합니다.
-5. 추출된 회사명을 기준으로 `accounts`를 찾습니다.
-6. 같은 회사가 있으면 `accounts`를 보강 update합니다.
-7. 같은 회사가 없으면 `accounts`를 insert합니다.
+5. 추출된 회사명과 로그인 사용자 ID 기준으로 `accounts`를 찾습니다.
+6. 같은 `tenant_id`, `owner_user_id`, 회사명이 있으면 `accounts`를 보강 update합니다.
+7. 같은 사용자 범위에 회사가 없으면 `accounts`를 insert합니다.
 8. `contacts`에는 항상 새 행을 insert합니다.
 9. `contacts.owner_user_id`는 로그인한 사용자 ID로 저장합니다.
 10. 프론트는 반환된 고객을 그리드에 추가하고 선택 상태로 표시합니다.
@@ -625,6 +625,8 @@ fsai_session
 - production 환경에서는 Secure cookie 사용
 - HMAC 서명
 - 기본 만료 시간 12시간
+- 보호 API 요청마다 세션 토큰의 `tenant_id`, `user_id`를 DB의 현재 `users`, `tenants` 상태와 다시 대조
+- 삭제/비활성 사용자 또는 active/trial이 아닌 테넌트는 기존 쿠키가 남아 있어도 접근 차단
 
 서명 키:
 
@@ -641,6 +643,9 @@ APP_SESSION_SECRET
 - `TRUST_PROXY_HEADERS=true`는 신뢰 가능한 reverse proxy 뒤에서만 켜고, 그렇지 않으면 클라이언트가 보낸 `X-Forwarded-For`를 신뢰하지 않습니다.
 - 보안 응답 헤더가 기본 적용됩니다.
 - production에서는 HSTS 헤더가 추가됩니다.
+- `/api/db/health`는 공개 응답에서 DB명, DB 버전, 테넌트 ID를 노출하지 않고 단순 상태만 반환합니다.
+- 이미지 업로드는 `MAX_UPLOAD_BYTES`로 제한합니다.
+- SNS 링크 처리 요청은 `MAX_SNS_LINKS_PER_REQUEST`로 제한하고, SNS 공개 메타데이터 fetch는 `SOCIAL_FETCH_TIMEOUT_SECONDS`를 사용합니다.
 
 ### 6.3 역할 정의
 
@@ -866,7 +871,7 @@ uv run python -c "import main; print('app import ok')"
 8. 공개 메타데이터 이름과 검색/AI 추출 이름이 충돌하면 잘못된 회사, 직책, 이메일을 저장하지 않습니다.
 9. SNS 링크를 `회사명`, `이름`, `직무`, `직위`, `홈페이지`, `SNS종류`, `SNS대상`, `SNS핸들`, `SNS링크` 필드로 정규화합니다.
 10. 정규화된 데이터는 명함 입력과 같은 `save_extracted_customer` 경로를 사용합니다.
-11. 같은 `tenant_id` 안에 같은 회사명이 있으면 `accounts`는 신규 insert하지 않고 update합니다.
+11. 같은 `tenant_id`, `owner_user_id` 안에 같은 회사명이 있으면 `accounts`는 신규 insert하지 않고 update합니다.
 12. `contacts`에는 매번 새 연락처 행을 insert합니다.
 13. 프론트는 저장 결과를 채팅창, 고객 그리드, 선택 고객 상세 정보에 즉시 반영합니다.
 
