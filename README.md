@@ -319,6 +319,7 @@ http://localhost:8000/
   - `meetings`, `activities`, `action_items`를 년/월 범위로 합쳐 월간 캘린더에 표시
   - 조회 조건: `year`, `month`
   - 로그인 사용자가 주최/담당/보고자인 일정성 데이터만 조회
+  - 에이전트 채팅에서 생성한 영업활동 일정은 `activities`에 저장되고 이 캘린더에 표시
 
 - `GET /api/quotes`
   - 견적 테이블 `quotes` 기준 조회
@@ -336,6 +337,16 @@ http://localhost:8000/
   - 이미지 파일 업로드
   - 명함 정보 추출
   - accounts/contacts에 저장
+
+에이전트 업무 실행:
+
+- `POST /api/chat`
+  - 일반 질문은 기존 대화/검색 에이전트 흐름으로 처리
+  - "일정 등록", "영업활동 추가", "미팅 잡아줘", "전화 일정 등록"처럼 영업활동 일정 등록 의도가 감지되면 LLM 호출 전에 서버가 `activities`에 `planned` 상태로 저장
+  - 고객은 채팅 컨텍스트의 선택 고객을 우선 사용하고, 메시지에 등록된 고객의 회사명/고객명이 들어 있으면 해당 고객을 매칭
+  - 일정 날짜는 `오늘`, `내일`, `모레`, `YYYY-MM-DD`, `M월 D일`, `이번/다음 주 요일` 형태를 지원
+  - 시간은 `오전/오후 N시`, `HH:MM`, `N시 반` 형태를 지원하며, 시간이 없으면 오전 9시로 저장
+  - 저장 완료 응답에는 `activity_saved`, `activity`, `calendar`가 포함되고 프론트가 캘린더 메뉴를 자동으로 열어 해당 월을 표시
 
 - `POST /api/extract/sns`
   - body: `message`
@@ -385,6 +396,31 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 에이전트 채팅 기반 영업활동 일정 등록
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `tests/test_security_regressions.py`
+- `.env.example`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 채팅 메시지에서 영업활동 일정 등록 의도를 감지하는 서버 로직을 추가했습니다.
+- 선택 고객 또는 메시지에 포함된 회사명/고객명을 기준으로 로그인 사용자의 기존 고객을 찾아 `activities`에 저장합니다.
+- 저장되는 활동은 `status='planned'`이며, 메시지에 따라 `call`, `email`, `visit`, `demo`, `task` 타입을 자동 선택합니다.
+- 날짜/시간 파싱은 오늘/내일/모레, `YYYY-MM-DD`, `M월 D일`, 이번/다음 주 요일, 오전/오후 시간 표현을 지원합니다.
+- 일정 저장이 완료되면 에이전트가 저장 완료 메시지를 답변하고, 프론트가 캘린더 메뉴를 자동으로 열어 저장된 월을 보여줍니다.
+- 저장 이벤트는 `audit_logs`에 `activity` create로 기록됩니다.
+- 날짜 파싱 기준 시간대는 `APP_TIMEZONE`으로 설정하며 기본값은 `Asia/Seoul`입니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py tests/test_security_regressions.py` 통과
+- `uv run python -m unittest discover -s tests` 통과
+- FastAPI TestClient로 선택 고객 컨텍스트 기반 `/api/chat` 일정 저장, `/api/calendar` 표시 확인 후 테스트 활동 soft delete
 
 ### 2026-05-01: 메인 메뉴별 조회 화면 구현
 

@@ -469,6 +469,17 @@ FSAI_EXTRA_ENV_PATH=
 4. `main.py`가 `selected_customer_highest_priority` 컨텍스트 생성
 5. 에이전트 프롬프트가 선택 고객을 마지막 등록 고객보다 우선
 
+선택 고객 기반 영업활동 일정 등록:
+
+1. 사용자가 고객 그리드에서 고객을 선택하거나, 채팅 메시지에 기존 고객의 회사명/고객명을 입력
+2. 사용자가 "내일 오후 2시 미팅 일정 등록", "OO회사 김OO 전화 일정 잡아줘"처럼 영업활동 일정 등록을 지시
+3. `/api/chat`이 LLM 호출 전에 일정 등록 의도를 감지
+4. 서버가 선택 고객 또는 메시지의 회사명/고객명으로 `contacts/accounts`를 현재 `tenant_id`, `owner_user_id` 범위에서 조회
+5. 날짜/시간을 파싱하고 `activities`에 `planned` 상태로 저장
+6. 저장 완료 응답에 `activity_saved=true`, 저장된 `activity`, 캘린더 이동용 `year/month`를 포함
+7. `script.js`가 에이전트 답변을 표시하고 캘린더 메뉴를 자동으로 열어 해당 월을 조회
+8. 캘린더 월간 화면에서 저장된 영업활동이 `activity` 이벤트로 표시
+
 ### 4.2 채팅 메뉴/패널
 
 현재 별도 상단 메뉴는 없고 중앙 패널로 항상 표시됩니다.
@@ -530,6 +541,7 @@ FSAI_EXTRA_ENV_PATH=
   - `activities.owner_user_id = 로그인 사용자`
   - `action_items.assignee_user_id` 또는 `reporter_user_id = 로그인 사용자`
 - 캘린더 이벤트 클릭 시 하단 상세 패널에 유형, 상태, 일시, 종료, 회사, 위치/분류를 표시합니다.
+- 에이전트 채팅에서 등록한 영업활동 일정은 `activities`에 저장되며 이 캘린더 메뉴에 즉시 표시됩니다.
 
 ### 4.5 견적 메뉴
 

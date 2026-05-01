@@ -139,12 +139,19 @@ window.addEventListener("resize", () => {
   }
 });
 
+function activateMainMenu(menu) {
+  const target = Array.from(menuButtons).find((button) => button.dataset.menu === menu);
+  if (!target) return;
+  menuButtons.forEach((item) => item.classList.remove("active"));
+  target.classList.add("active");
+  canvasTitle.textContent = target.dataset.canvasTitle;
+}
+
 menuButtons.forEach((button) => {
   button.addEventListener("click", () => {
-    menuButtons.forEach((item) => item.classList.remove("active"));
-    button.classList.add("active");
-    canvasTitle.textContent = button.dataset.canvasTitle;
-    loadMenu(button.dataset.menu || "customers");
+    const menu = button.dataset.menu || "customers";
+    activateMainMenu(menu);
+    loadMenu(menu);
   });
 });
 
@@ -1383,6 +1390,19 @@ async function requestChatReply(text) {
     updatePlanStep(planSteps, "answer", "done", 100, "최신 정보 우선 규칙을 적용해 답변을 생성했습니다.");
     const reply = result.reply || "응답을 생성하지 못했습니다.";
     appendMessage("ai", reply, { richText: true });
+    if (result.activity_schedule) {
+      if (result.activity_saved && result.calendar) {
+        updatePlanStep(planSteps, "research", "done", 100, "영업활동 일정을 DB에 저장했습니다.");
+        updatePlanStep(planSteps, "answer", "done", 100, "캘린더 메뉴를 열어 저장된 일정을 확인합니다.");
+        calendarCursor = new Date(Number(result.calendar.year), Number(result.calendar.month) - 1, 1);
+        activateMainMenu("calendar");
+        await loadMenu("calendar");
+        addLog("Schedule Agent", "영업활동 일정을 저장하고 캘린더를 열었습니다.", "done");
+      } else {
+        updatePlanStep(planSteps, "research", "done", 100, "일정 등록에 필요한 추가 정보를 확인했습니다.");
+        updatePlanStep(planSteps, "answer", "done", 100, "추가 입력 요청을 채팅창에 표시했습니다.");
+      }
+    }
     if (result.sns_imported && Array.isArray(result.items)) {
       result.items.filter((item) => item.saved).forEach((item) => {
         const source = `SNS · ${item.platform || "Unknown"}`;

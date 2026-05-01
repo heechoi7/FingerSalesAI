@@ -176,6 +176,19 @@ class SecurityRegressionTests(unittest.TestCase):
 
         self.assertEqual(codes, ["lead", "prospect", "opportunity", "proposal", "contract", "success"])
 
+    def test_sales_activity_schedule_intent_is_detected(self):
+        self.assertTrue(main.is_sales_activity_schedule_request("SK 렌터카 이재성 내일 오후 2시 미팅 일정 등록해줘"))
+        self.assertFalse(main.is_sales_activity_schedule_request("SK 렌터카 정보 알려줘"))
+
+    def test_sales_activity_due_at_parses_relative_korean_time(self):
+        now = main.datetime(2026, 5, 1, 10, 0)
+        due_at = main.parse_sales_activity_due_at("내일 오후 2시 미팅 일정 등록", now)
+
+        self.assertEqual(due_at, main.datetime(2026, 5, 2, 14, 0))
+
+    def test_sales_activity_type_parses_call(self):
+        self.assertEqual(main.parse_sales_activity_type("내일 오전 10시 전화 일정 등록"), "call")
+
 
 if __name__ == "__main__":
     unittest.main()

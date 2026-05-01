@@ -1,6 +1,6 @@
 from pathlib import Path
 import base64
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 import hashlib
 import hmac
@@ -13,6 +13,7 @@ import time
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
@@ -56,6 +57,7 @@ TENANT_SELF_JOIN_ROLES = {"sales", "viewer"}
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SNS_LINKS_PER_REQUEST = int(os.getenv("MAX_SNS_LINKS_PER_REQUEST", "3"))
 SOCIAL_FETCH_TIMEOUT_SECONDS = float(os.getenv("SOCIAL_FETCH_TIMEOUT_SECONDS", "3"))
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Seoul")
 _auth_attempts: dict[str, list[float]] = {}
 ADMIN_ROLES = {"owner", "admin"}
 USER_STATUS_VALUES = {"active", "invited", "locked", "disabled"}
@@ -1684,6 +1686,272 @@ def save_extracted_customer(
     return insert_customer(payload)
 
 
+SALES_ACTIVITY_INTENT_RE = re.compile(r"(일정|영업활동|활동|미팅|회의|방문|전화|통화|콜|메일|데모|시연)")
+SALES_ACTIVITY_ACTION_RE = re.compile(r"(등록|추가|잡아|생성|저장|예약|만들|넣어|기록)")
+WEEKDAY_INDEXES = {
+    "월": 0,
+    "월요일": 0,
+    "화": 1,
+    "화요일": 1,
+    "수": 2,
+    "수요일": 2,
+    "목": 3,
+    "목요일": 3,
+    "금": 4,
+    "금요일": 4,
+    "토": 5,
+    "토요일": 5,
+    "일": 6,
+    "일요일": 6,
+}
+
+
+def app_now() -> datetime:
+    try:
+        return datetime.now(ZoneInfo(APP_TIMEZONE))
+    except Exception:
+        return datetime.now()
+
+
+def is_sales_activity_schedule_request(message: str) -> bool:
+    text = message or ""
+    return bool(SALES_ACTIVITY_INTENT_RE.search(text) and SALES_ACTIVITY_ACTION_RE.search(text))
+
+
+def parse_sales_activity_type(message: str) -> str:
+    text = message or ""
+    if re.search(r"(전화|통화|콜)", text):
+        return "call"
+    if re.search(r"(메일|이메일)", text):
+        return "email"
+    if re.search(r"(방문|미팅|회의|만나|대면)", text):
+        return "visit"
+    if re.search(r"(데모|시연)", text):
+        return "demo"
+    return "task"
+
+
+def parse_activity_time(message: str) -> tuple[int, int]:
+    text = message or ""
+    colon_match = re.search(r"(?<!\d)([01]?\d|2[0-3])\s*:\s*([0-5]\d)(?!\d)", text)
+    if colon_match:
+        return int(colon_match.group(1)), int(colon_match.group(2))
+
+    korean_match = re.search(r"(오전|오후|아침|저녁|밤)?\s*([0-2]?\d)\s*시\s*(반|[0-5]?\d\s*분?)?", text)
+    if korean_match:
+        marker = korean_match.group(1) or ""
+        hour = int(korean_match.group(2))
+        minute_text = (korean_match.group(3) or "").strip()
+        minute = 30 if "반" in minute_text else int(re.sub(r"\D", "", minute_text) or 0)
+        if marker in {"오후", "저녁", "밤"} and hour < 12:
+            hour += 12
+        if marker in {"오전", "아침"} and hour == 12:
+            hour = 0
+        return min(hour, 23), min(minute, 59)
+
+    if "오전" in text or "아침" in text:
+        return 9, 0
+    if "점심" in text:
+        return 12, 0
+    if "오후" in text:
+        return 14, 0
+    if "저녁" in text:
+        return 18, 0
+    return 9, 0
+
+
+def next_weekday(base_date: date, target_weekday: int, next_week: bool = False) -> date:
+    days = (target_weekday - base_date.weekday()) % 7
+    if next_week:
+        days = days or 7
+    return base_date + timedelta(days=days)
+
+
+def parse_sales_activity_due_at(message: str, now: datetime | None = None) -> datetime | None:
+    now = now or app_now()
+    text = message or ""
+    target_date: date | None = None
+
+    absolute = re.search(r"(20\d{2})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})", text)
+    if absolute:
+        target_date = date(int(absolute.group(1)), int(absolute.group(2)), int(absolute.group(3)))
+    if target_date is None:
+        month_day = re.search(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일", text)
+        if month_day:
+            month = int(month_day.group(1))
+            day = int(month_day.group(2))
+            year = now.year + (1 if month < now.month else 0)
+            target_date = date(year, month, day)
+    if target_date is None:
+        if "모레" in text:
+            target_date = (now + timedelta(days=2)).date()
+        elif "내일" in text:
+            target_date = (now + timedelta(days=1)).date()
+        elif "오늘" in text:
+            target_date = now.date()
+    if target_date is None:
+        weekday_match = re.search(r"(이번\s*주|다음\s*주)?\s*(월요일|화요일|수요일|목요일|금요일|토요일|일요일|월|화|수|목|금|토|일)", text)
+        if weekday_match:
+            target_date = next_weekday(
+                now.date(),
+                WEEKDAY_INDEXES[weekday_match.group(2)],
+                next_week=bool(weekday_match.group(1) and "다음" in weekday_match.group(1)),
+            )
+
+    if target_date is None:
+        return None
+
+    hour, minute = parse_activity_time(text)
+    return datetime(target_date.year, target_date.month, target_date.day, hour, minute)
+
+
+def selected_customer_id_from_context(context: dict[str, Any] | None) -> int | None:
+    if not isinstance(context, dict):
+        return None
+    selected = context.get("selectedCustomer")
+    if not isinstance(selected, dict):
+        return None
+    for key in ("contactId", "id"):
+        try:
+            value = int(selected.get(key) or 0)
+            if value:
+                return value
+        except Exception:
+            continue
+    return None
+
+
+def fetch_owned_customer_rows(cursor, tenant_id: int, owner_user_id: int) -> list[dict[str, Any]]:
+    cursor.execute(
+        """
+        SELECT
+            c.id AS contact_id,
+            c.tenant_id,
+            c.account_id,
+            c.owner_user_id,
+            c.name AS contact_name,
+            c.title,
+            c.department,
+            c.email,
+            c.phone,
+            c.mobile,
+            c.created_at,
+            c.updated_at,
+            a.name AS company_name,
+            a.website,
+            a.phone AS account_phone,
+            a.address,
+            a.business_no,
+            a.industry
+        FROM contacts c
+        LEFT JOIN accounts a
+               ON a.id = c.account_id
+              AND a.tenant_id = c.tenant_id
+              AND a.deleted_at IS NULL
+        WHERE c.tenant_id = %s
+          AND c.owner_user_id = %s
+          AND c.deleted_at IS NULL
+        ORDER BY c.updated_at DESC, c.id DESC
+        LIMIT 500
+        """,
+        (tenant_id, owner_user_id),
+    )
+    return cursor.fetchall()
+
+
+def resolve_sales_activity_customer(
+    cursor,
+    session: dict[str, Any],
+    message: str,
+    context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    selected_id = selected_customer_id_from_context(context)
+    rows = fetch_owned_customer_rows(cursor, session["tenant_id"], session["user_id"])
+    selected = next((row for row in rows if row.get("contact_id") == selected_id), None)
+    normalized_message = re.sub(r"\s+", "", message or "").lower()
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for row in rows:
+        score = 0
+        company = re.sub(r"\s+", "", str(row.get("company_name") or "")).lower()
+        contact = re.sub(r"\s+", "", str(row.get("contact_name") or "")).lower()
+        if company and len(company) >= 2 and company in normalized_message:
+            score += len(company) * 2
+        if contact and len(contact) >= 2 and contact in normalized_message:
+            score += len(contact) * 3
+        if score:
+            scored.append((score, row))
+    if scored:
+        scored.sort(key=lambda item: (item[0], item[1].get("updated_at") or item[1].get("created_at") or ""), reverse=True)
+        return scored[0][1]
+    return selected
+
+
+def create_sales_activity_from_message(
+    session: dict[str, Any],
+    message: str,
+    context: dict[str, Any] | None,
+    request: Request,
+) -> dict[str, Any]:
+    due_at = parse_sales_activity_due_at(message)
+    if due_at is None:
+        return {
+            "saved": False,
+            "reply": "영업활동 일정으로 이해했습니다. 저장하려면 날짜를 함께 알려주세요. 예: 내일 오후 2시에 미팅 일정 등록",
+        }
+
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        customer = resolve_sales_activity_customer(cursor, session, message, context)
+        if not customer:
+            return {
+                "saved": False,
+                "reply": "영업활동 일정을 저장하려면 고객 패널에서 고객을 선택하거나, 등록된 고객의 회사명/이름을 메시지에 포함해 주세요.",
+            }
+        activity_type = parse_sales_activity_type(message)
+        company = customer.get("company_name") or "회사명 미확인"
+        contact = customer.get("contact_name") or "고객명 미확인"
+        subject = f"{company} / {contact} 영업활동"
+        cursor.execute(
+            """
+            INSERT INTO activities (
+                tenant_id, owner_user_id, account_id, contact_id,
+                activity_type, subject, content, status, due_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'planned', %s)
+            """,
+            (
+                session["tenant_id"],
+                session["user_id"],
+                customer.get("account_id"),
+                customer.get("contact_id"),
+                activity_type,
+                subject,
+                message,
+                due_at,
+            ),
+        )
+        activity_id = cursor.lastrowid
+        cursor.execute(
+            """
+            SELECT id, tenant_id, owner_user_id, account_id, contact_id, activity_type, subject, content, status, due_at, created_at, updated_at
+            FROM activities
+            WHERE id = %s AND tenant_id = %s
+            """,
+            (activity_id, session["tenant_id"]),
+        )
+        activity = cursor.fetchone()
+        write_audit_log(cursor, session, "create", "activity", activity_id, None, activity, request)
+
+    due_label = due_at.strftime("%Y-%m-%d %H:%M")
+    return {
+        "saved": True,
+        "reply": f"{company} / {contact} 고객의 영업활동 일정을 {due_label}에 저장했습니다. 캘린더에서 바로 확인할 수 있도록 열어둘게요.",
+        "activity": admin_json_row(activity),
+        "customer": contact_row_to_customer(customer),
+        "calendar": {"year": due_at.year, "month": due_at.month},
+    }
+
+
 def build_chat_context(context: dict[str, Any] | None) -> str:
     if not context:
         return "현재 세션 컨텍스트가 없습니다."
@@ -3267,6 +3535,24 @@ async def chat(chat_request: ChatRequest, request: Request):
         except Exception as error:
             print("SNS chat inspection failed:", error)
             return internal_error_response("SNS 링크 정보를 확인하는 중 오류가 발생했습니다.")
+
+    if is_sales_activity_schedule_request(message):
+        try:
+            activity_result = create_sales_activity_from_message(session, message, chat_request.context, request)
+            return {
+                "success": True,
+                "reply": activity_result["reply"],
+                "activity_schedule": True,
+                "activity_saved": activity_result.get("saved", False),
+                "activity": activity_result.get("activity"),
+                "customer": activity_result.get("customer"),
+                "calendar": activity_result.get("calendar"),
+            }
+        except HTTPException:
+            raise
+        except Exception as error:
+            print("Sales activity schedule failed:", error)
+            return internal_error_response("영업활동 일정을 저장하는 중 오류가 발생했습니다.")
 
     try:
         model = create_gemini_model(temperature=0.3)
