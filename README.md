@@ -294,6 +294,7 @@ http://localhost:8000/
 
 - `GET /api/customers`
   - 로그인 세션의 `tenant_id`, `user_id(owner_user_id)` 기준으로 contacts/accounts join 조회
+  - 조회 조건: `company_name`, `contact_name`
 
 - `GET /api/customers/{customer_id}`
   - 로그인 세션의 `tenant_id`, `user_id(owner_user_id)` 안에서 특정 연락처 조회
@@ -306,6 +307,28 @@ http://localhost:8000/
 
 - `DELETE /api/customers/{customer_id}`
   - 실제 삭제가 아니라 `contacts.deleted_at = NOW(6)` 소프트 삭제
+
+메인 메뉴 조회:
+
+- `GET /api/opportunities`
+  - 영업기회 테이블 `opportunities` 기준 조회
+  - 조회 조건: `name`(영업기회명), `status`(영업기회 상태), `company_name`
+  - 로그인 세션의 `tenant_id`, `user_id(owner_user_id)` 기준으로 제한
+
+- `GET /api/calendar`
+  - `meetings`, `activities`, `action_items`를 년/월 범위로 합쳐 월간 캘린더에 표시
+  - 조회 조건: `year`, `month`
+  - 로그인 사용자가 주최/담당/보고자인 일정성 데이터만 조회
+
+- `GET /api/quotes`
+  - 견적 테이블 `quotes` 기준 조회
+  - 조회 조건: `company_name`, `contact_name`
+  - 로그인 세션의 `tenant_id`, `user_id(owner_user_id)` 기준으로 제한
+
+- `GET /api/contracts`
+  - 계약 테이블 `contracts` 기준 조회
+  - 조회 조건: `company_name`, `contact_name`
+  - 로그인 세션의 `tenant_id`, `user_id(owner_user_id)` 기준으로 제한
 
 명함:
 
@@ -362,6 +385,33 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 메인 메뉴별 조회 화면 구현
+
+변경 파일:
+- `main.py`
+- `index.html`
+- `script.js`
+- `styles.css`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 메인 메뉴 버튼에 `data-menu` 식별자를 추가해 메뉴별 화면 전환 기준을 명확히 했습니다.
+- 고객 메뉴에 회사명/고객명 조건 조회 폼을 추가하고 `/api/customers`에 `company_name`, `contact_name` 조건을 반영했습니다.
+- 파이프라인 메뉴에 영업기회명/상태/회사명 조건 조회 화면을 추가하고 `/api/opportunities` API를 구현했습니다.
+- 캘린더 메뉴를 구글 캘린더와 유사한 월간 그리드 UI로 구성하고 `/api/calendar?year=&month=` API를 구현했습니다.
+- 캘린더 데이터는 `meetings`, `activities`, `action_items`를 월 범위로 합쳐 표시합니다.
+- 견적 메뉴에 회사명/고객명 조건 조회 화면을 추가하고 `/api/quotes` API를 구현했습니다.
+- 계약 메뉴에 회사명/고객명 조건 조회 화면을 추가하고 `/api/contracts` API를 구현했습니다.
+- 각 목록 행 또는 캘린더 이벤트를 클릭하면 하단 상세 패널에 선택 항목의 상세 정보를 표시합니다.
+- 모든 신규 조회 API는 로그인 세션의 `tenant_id`와 사용자 ID 기준으로 범위를 제한하고 `audit_logs`에 조회 로그를 남깁니다.
+- 메인 우측 실행 플랜/추론 로그/스케줄러 패널 사이 간격을 `10px`로 조정했습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py tests/test_security_regressions.py` 통과
+- FastAPI TestClient로 `finger / james@crm.co.kr` 로그인 후 `/api/customers`, `/api/opportunities`, `/api/calendar`, `/api/quotes`, `/api/contracts` 응답 확인
 
 ### 2026-05-01: 관리자 CRUD와 사용로그 보강
 

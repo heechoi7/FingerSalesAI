@@ -385,7 +385,7 @@ a {
   border-radius: 0 8px 8px 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr) minmax(0, 0.85fr) minmax(0, 0.85fr);
-  gap: 12px;
+  gap: 10px;
   padding: 0;
   background: transparent;
   border: 0;
@@ -537,6 +537,61 @@ h3 {
   background: var(--surface);
 }
 
+.module-view {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+}
+
+.module-filter {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr)) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.module-filter label,
+.calendar-picker {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.module-filter input,
+.calendar-picker input,
+.calendar-picker select {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+}
+
+.module-filter button,
+.calendar-toolbar button,
+.calendar-picker button {
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--charcoal);
+  padding: 0 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.module-filter button:hover,
+.calendar-toolbar button:hover,
+.calendar-picker button:hover {
+  border-color: rgba(215, 53, 53, 0.45);
+  color: var(--brand-dark);
+}
+
 .grid-board {
   height: 100%;
   min-height: 300px;
@@ -596,9 +651,14 @@ h3 {
   cursor: pointer;
 }
 
-.customer-table tbody tr.customer-row.selected td {
+.customer-table tbody tr.customer-row.selected td,
+.customer-table tbody tr.data-row.selected td {
   background: #fff1f1;
   box-shadow: inset 0 1px 0 rgba(215, 53, 53, 0.12), inset 0 -1px 0 rgba(215, 53, 53, 0.12);
+}
+
+.customer-table tbody tr.data-row {
+  cursor: pointer;
 }
 
 .customer-table .empty-row td {
@@ -606,6 +666,128 @@ h3 {
   text-align: center;
   padding: 36px 14px;
   white-space: normal;
+}
+
+.calendar-view {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+}
+
+.calendar-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.calendar-nav,
+.calendar-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.calendar-nav strong {
+  color: var(--charcoal);
+  font-size: 18px;
+}
+
+.calendar-picker input,
+.calendar-picker select {
+  width: auto;
+  min-width: 82px;
+  margin-top: 0;
+}
+
+.calendar-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(96px, 1fr));
+  grid-template-rows: auto repeat(6, minmax(92px, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.calendar-weekday {
+  padding: 9px 8px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #f7f8fb;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.calendar-weekday:nth-child(7) {
+  border-right: 0;
+}
+
+.calendar-cell {
+  min-width: 0;
+  min-height: 0;
+  padding: 7px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+.calendar-cell:nth-child(7n) {
+  border-right: 0;
+}
+
+.calendar-cell.muted {
+  background: #fafbfc;
+  color: var(--muted);
+}
+
+.calendar-cell.today .calendar-day-number {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+}
+
+.calendar-day-number {
+  margin-bottom: 5px;
+  color: var(--charcoal);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.calendar-events {
+  display: grid;
+  gap: 4px;
+}
+
+.calendar-event {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: #edf4ff;
+  color: #1d4f91;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.calendar-more {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .pipeline-card,

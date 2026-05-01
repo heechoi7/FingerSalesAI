@@ -2,6 +2,7 @@ const workspace = document.querySelector(".workspace");
 const chatInput = document.querySelector(".chat-input");
 const chatStream = document.querySelector(".chat-stream");
 const canvasTitle = document.querySelector("#canvas-title");
+const canvasArea = document.querySelector(".canvas-area");
 const menuButtons = document.querySelectorAll(".main-nav button");
 const panelFocusButtons = document.querySelectorAll(".maximize-panel-btn");
 const attachButton = document.querySelector(".attach-btn");
@@ -10,9 +11,9 @@ const attachmentPreview = document.querySelector(".attachment-preview");
 const agentStack = document.querySelector(".agent-stack");
 const logList = document.querySelector(".log-list");
 const sendButton = document.querySelector(".send-btn");
-const customerTableBody = document.querySelector("#customer-table-body");
-const customerDetailList = document.querySelector("#customer-detail-list");
-const customerDetailTitle = document.querySelector("#customer-detail-title");
+let customerTableBody = document.querySelector("#customer-table-body");
+let customerDetailList = document.querySelector("#customer-detail-list");
+let customerDetailTitle = document.querySelector("#customer-detail-title");
 const sessionUserLabel = document.querySelector("#session-user-label");
 const logoutButton = document.querySelector("#logout-button");
 const adminLink = document.querySelector("#admin-link");
@@ -143,9 +144,7 @@ menuButtons.forEach((button) => {
     menuButtons.forEach((item) => item.classList.remove("active"));
     button.classList.add("active");
     canvasTitle.textContent = button.dataset.canvasTitle;
-    if (button === menuButtons[0]) {
-      loadCustomers();
-    }
+    loadMenu(button.dataset.menu || "customers");
   });
 });
 
@@ -289,6 +288,405 @@ function rememberCardInfo(file, data, briefing, customer = null) {
   }
 }
 
+function renderCustomerView() {
+  if (!canvasArea) return;
+  canvasArea.innerHTML = `
+    <div class="module-view">
+      <form class="module-filter" id="customer-filter-form">
+        <label>회사명<input name="company_name" placeholder="회사명" /></label>
+        <label>고객명<input name="contact_name" placeholder="고객명" /></label>
+        <button type="submit">조회</button>
+      </form>
+      <div class="customer-table-wrap" aria-label="고객 정보 그리드">
+        <table class="customer-table">
+          <thead>
+            <tr>
+              <th>회사명</th>
+              <th>이름</th>
+              <th>직무</th>
+              <th>직위</th>
+              <th>휴대전화</th>
+              <th>이메일</th>
+              <th>홈페이지</th>
+              <th>추가 정보</th>
+              <th>등록 시간</th>
+            </tr>
+          </thead>
+          <tbody id="customer-table-body">
+            <tr class="empty-row"><td colspan="9">조회할 고객 조건을 입력하거나 조회 버튼을 눌러 주세요.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  customerTableBody = document.querySelector("#customer-table-body");
+  customerDetailList = document.querySelector("#customer-detail-list");
+  customerDetailTitle = document.querySelector("#customer-detail-title");
+  document.querySelector("#customer-filter-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadCustomers();
+  });
+}
+
+function filterQuery(formId) {
+  const form = document.querySelector(formId);
+  const params = new URLSearchParams();
+  if (!form) return params;
+  new FormData(form).forEach((value, key) => {
+    const text = String(value || "").trim();
+    if (text) params.set(key, text);
+  });
+  return params;
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatDateOnly(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit" });
+}
+
+function formatAmount(amount, currency = "KRW") {
+  if (amount === null || amount === undefined || amount === "") return "-";
+  const number = Number(amount);
+  if (Number.isNaN(number)) return String(amount);
+  return `${currency || "KRW"} ${number.toLocaleString("ko-KR")}`;
+}
+
+function showDetail(title, rows) {
+  if (customerDetailTitle) customerDetailTitle.textContent = title || "상세 정보";
+  if (!customerDetailList) return;
+  customerDetailList.innerHTML = rows
+    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "-")}</dd></div>`)
+    .join("");
+}
+
+function renderDataTable({ rows, columns, emptyMessage, onSelect }) {
+  const bodyRows = rows.length
+    ? rows
+        .map((row, index) => {
+          const cells = columns.map((column) => `<td>${escapeHtml(column.value(row) || "-")}</td>`).join("");
+          return `<tr class="data-row" data-row-index="${index}">${cells}</tr>`;
+        })
+        .join("")
+    : `<tr class="empty-row"><td colspan="${columns.length}">${escapeHtml(emptyMessage)}</td></tr>`;
+  return `
+    <div class="customer-table-wrap module-table-wrap">
+      <table class="customer-table">
+        <thead><tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function bindDataRows(rows, detailFactory) {
+  document.querySelectorAll(".data-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      document.querySelectorAll(".data-row.selected").forEach((item) => item.classList.remove("selected"));
+      row.classList.add("selected");
+      const item = rows[Number(row.dataset.rowIndex)];
+      const detail = detailFactory(item);
+      showDetail(detail.title, detail.rows);
+    });
+  });
+}
+
+function renderPipelineView(rows = []) {
+  const columns = [
+    { label: "영업기회명", value: (row) => row.name },
+    { label: "상태", value: (row) => row.status },
+    { label: "단계", value: (row) => row.stage_name || row.stage_code },
+    { label: "회사명", value: (row) => row.company_name },
+    { label: "고객명", value: (row) => row.contact_name },
+    { label: "금액", value: (row) => formatAmount(row.amount, row.currency) },
+    { label: "확률", value: (row) => (row.probability_percent ? `${row.probability_percent}%` : "-") },
+    { label: "종료예정일", value: (row) => formatDateOnly(row.close_date) },
+  ];
+  canvasArea.innerHTML = `
+    <div class="module-view">
+      <form class="module-filter" id="pipeline-filter-form">
+        <label>영업기회명<input name="name" placeholder="영업기회명" /></label>
+        <label>영업기회 상태<input name="status" placeholder="open, won, lost" /></label>
+        <label>회사명<input name="company_name" placeholder="회사명" /></label>
+        <button type="submit">조회</button>
+      </form>
+      ${renderDataTable({ rows, columns, emptyMessage: "조회된 영업기회가 없습니다." })}
+    </div>
+  `;
+  document.querySelector("#pipeline-filter-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadPipeline();
+  });
+  bindDataRows(rows, (row) => ({
+    title: row.name || "영업기회 상세",
+    rows: [
+      ["회사명", row.company_name],
+      ["고객명", row.contact_name],
+      ["상태", row.status],
+      ["단계", row.stage_name || row.stage_code],
+      ["금액", formatAmount(row.amount, row.currency)],
+      ["확률", row.probability_percent ? `${row.probability_percent}%` : "-"],
+      ["종료예정일", formatDateOnly(row.close_date)],
+      ["수정일", formatDateTime(row.updated_at)],
+    ],
+  }));
+}
+
+async function loadPipeline() {
+  const params = filterQuery("#pipeline-filter-form");
+  const response = await apiFetch(`/api/opportunities?${params.toString()}`);
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(apiErrorMessage(result, "영업기회를 불러오지 못했습니다."));
+  renderPipelineView(result.opportunities || []);
+}
+
+function renderQuoteView(rows = []) {
+  const columns = [
+    { label: "견적번호", value: (row) => row.quote_no },
+    { label: "견적명", value: (row) => row.title },
+    { label: "회사명", value: (row) => row.company_name },
+    { label: "고객명", value: (row) => row.contact_name },
+    { label: "상태", value: (row) => row.status },
+    { label: "금액", value: (row) => formatAmount(row.total_amount, row.currency) },
+    { label: "유효일", value: (row) => formatDateOnly(row.valid_until) },
+    { label: "영업기회", value: (row) => row.opportunity_name },
+  ];
+  canvasArea.innerHTML = `
+    <div class="module-view">
+      <form class="module-filter" id="quote-filter-form">
+        <label>회사명<input name="company_name" placeholder="회사명" /></label>
+        <label>고객명<input name="contact_name" placeholder="고객명" /></label>
+        <button type="submit">조회</button>
+      </form>
+      ${renderDataTable({ rows, columns, emptyMessage: "조회된 견적이 없습니다." })}
+    </div>
+  `;
+  document.querySelector("#quote-filter-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadQuotes();
+  });
+  bindDataRows(rows, (row) => ({
+    title: row.title || row.quote_no || "견적 상세",
+    rows: [
+      ["견적번호", row.quote_no],
+      ["회사명", row.company_name],
+      ["고객명", row.contact_name],
+      ["상태", row.status],
+      ["금액", formatAmount(row.total_amount, row.currency)],
+      ["유효일", formatDateOnly(row.valid_until)],
+      ["발송일", formatDateTime(row.sent_at)],
+      ["영업기회", row.opportunity_name],
+    ],
+  }));
+}
+
+async function loadQuotes() {
+  const params = filterQuery("#quote-filter-form");
+  const response = await apiFetch(`/api/quotes?${params.toString()}`);
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(apiErrorMessage(result, "견적을 불러오지 못했습니다."));
+  renderQuoteView(result.quotes || []);
+}
+
+function renderContractView(rows = []) {
+  const columns = [
+    { label: "계약번호", value: (row) => row.contract_no },
+    { label: "계약명", value: (row) => row.title },
+    { label: "회사명", value: (row) => row.company_name },
+    { label: "고객명", value: (row) => row.contact_name },
+    { label: "상태", value: (row) => row.status },
+    { label: "금액", value: (row) => formatAmount(row.contract_amount, row.currency) },
+    { label: "시작일", value: (row) => formatDateOnly(row.start_date) },
+    { label: "종료일", value: (row) => formatDateOnly(row.end_date) },
+  ];
+  canvasArea.innerHTML = `
+    <div class="module-view">
+      <form class="module-filter" id="contract-filter-form">
+        <label>회사명<input name="company_name" placeholder="회사명" /></label>
+        <label>고객명<input name="contact_name" placeholder="고객명" /></label>
+        <button type="submit">조회</button>
+      </form>
+      ${renderDataTable({ rows, columns, emptyMessage: "조회된 계약이 없습니다." })}
+    </div>
+  `;
+  document.querySelector("#contract-filter-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadContracts();
+  });
+  bindDataRows(rows, (row) => ({
+    title: row.title || row.contract_no || "계약 상세",
+    rows: [
+      ["계약번호", row.contract_no],
+      ["회사명", row.company_name],
+      ["고객명", row.contact_name],
+      ["상태", row.status],
+      ["금액", formatAmount(row.contract_amount, row.currency)],
+      ["시작일", formatDateOnly(row.start_date)],
+      ["종료일", formatDateOnly(row.end_date)],
+      ["서명일", formatDateTime(row.signed_at)],
+      ["견적번호", row.quote_no],
+      ["영업기회", row.opportunity_name],
+    ],
+  }));
+}
+
+async function loadContracts() {
+  const params = filterQuery("#contract-filter-form");
+  const response = await apiFetch(`/api/contracts?${params.toString()}`);
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(apiErrorMessage(result, "계약을 불러오지 못했습니다."));
+  renderContractView(result.contracts || []);
+}
+
+let calendarCursor = new Date();
+
+function eventDateKey(event) {
+  const value = event.starts_at;
+  if (!value) return "";
+  return String(value).slice(0, 10);
+}
+
+function renderCalendarView(events = [], cursor = calendarCursor) {
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const first = new Date(year, month, 1);
+  const start = new Date(first);
+  start.setDate(1 - first.getDay());
+  const byDate = events.reduce((acc, event) => {
+    const key = eventDateKey(event);
+    if (!key) return acc;
+    acc[key] = acc[key] || [];
+    acc[key].push(event);
+    return acc;
+  }, {});
+  const days = Array.from({ length: 42 }, (_, index) => {
+    const day = new Date(start);
+    day.setDate(start.getDate() + index);
+    return day;
+  });
+  canvasArea.innerHTML = `
+    <div class="calendar-view">
+      <div class="calendar-toolbar">
+        <div class="calendar-nav">
+          <button type="button" data-calendar-action="today">오늘</button>
+          <button type="button" aria-label="이전 달" data-calendar-action="prev">‹</button>
+          <button type="button" aria-label="다음 달" data-calendar-action="next">›</button>
+          <strong>${year}년 ${month + 1}월</strong>
+        </div>
+        <form class="calendar-picker" id="calendar-filter-form">
+          <input name="year" type="number" min="2000" max="2100" value="${year}" aria-label="년도" />
+          <select name="month" aria-label="월">
+            ${Array.from({ length: 12 }, (_, index) => `<option value="${index + 1}" ${index === month ? "selected" : ""}>${index + 1}월</option>`).join("")}
+          </select>
+          <button type="submit">이동</button>
+        </form>
+      </div>
+      <div class="calendar-grid">
+        ${["일", "월", "화", "수", "목", "금", "토"].map((day) => `<div class="calendar-weekday">${day}</div>`).join("")}
+        ${days
+          .map((day) => {
+            const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+            const dayEvents = byDate[key] || [];
+            const muted = day.getMonth() !== month ? " muted" : "";
+            const today = new Date().toDateString() === day.toDateString() ? " today" : "";
+            return `
+              <div class="calendar-cell${muted}${today}" data-date="${key}">
+                <div class="calendar-day-number">${day.getDate()}</div>
+                <div class="calendar-events">
+                  ${dayEvents.slice(0, 4).map((event, eventIndex) => `<button type="button" class="calendar-event" data-event-date="${key}" data-event-index="${eventIndex}">${escapeHtml(event.title || event.source_type)}</button>`).join("")}
+                  ${dayEvents.length > 4 ? `<span class="calendar-more">+${dayEvents.length - 4}</span>` : ""}
+                </div>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    </div>
+  `;
+  document.querySelector("#calendar-filter-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    calendarCursor = new Date(Number(form.get("year")), Number(form.get("month")) - 1, 1);
+    loadCalendar();
+  });
+  document.querySelectorAll("[data-calendar-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.calendarAction;
+      if (action === "today") calendarCursor = new Date();
+      if (action === "prev") calendarCursor = new Date(year, month - 1, 1);
+      if (action === "next") calendarCursor = new Date(year, month + 1, 1);
+      loadCalendar();
+    });
+  });
+  document.querySelectorAll(".calendar-event").forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = (byDate[button.dataset.eventDate] || [])[Number(button.dataset.eventIndex)];
+      showDetail(item.title || "일정 상세", [
+        ["유형", item.source_type],
+        ["상태", item.status],
+        ["일시", formatDateTime(item.starts_at)],
+        ["종료", formatDateTime(item.ends_at)],
+        ["회사명", item.company_name],
+        ["위치/분류", item.location],
+      ]);
+    });
+  });
+}
+
+async function loadCalendar() {
+  const year = calendarCursor.getFullYear();
+  const month = calendarCursor.getMonth() + 1;
+  const response = await apiFetch(`/api/calendar?year=${year}&month=${month}`);
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(apiErrorMessage(result, "캘린더를 불러오지 못했습니다."));
+  renderCalendarView(result.events || [], calendarCursor);
+}
+
+async function loadMenu(menu) {
+  try {
+    if (menu === "customers") {
+      renderCustomerView();
+      await loadCustomers();
+      return;
+    }
+    if (menu === "pipeline") {
+      renderPipelineView();
+      await loadPipeline();
+      return;
+    }
+    if (menu === "calendar") {
+      await loadCalendar();
+      return;
+    }
+    if (menu === "quotes") {
+      renderQuoteView();
+      await loadQuotes();
+      return;
+    }
+    if (menu === "contracts") {
+      renderContractView();
+      await loadContracts();
+      return;
+    }
+  } catch (error) {
+    addLog("Menu", error.message, "error");
+  }
+}
+
 function customerToCardData(customer) {
   if (customer?.card_data && Object.keys(customer.card_data).length) {
     return customer.card_data;
@@ -409,7 +807,8 @@ async function loadCustomers() {
   if (isLoadingCustomers) return;
   isLoadingCustomers = true;
   try {
-    const response = await apiFetch("/api/customers");
+    const params = filterQuery("#customer-filter-form");
+    const response = await apiFetch(`/api/customers?${params.toString()}`);
     const result = await response.json();
     if (!response.ok || !result.success) {
       throw new Error(result.error || "고객 목록을 불러오지 못했습니다.");
@@ -1079,7 +1478,7 @@ chatInput?.addEventListener("submit", async (event) => {
 async function initApp() {
   try {
     await loadCurrentSession();
-    await loadCustomers();
+    await loadMenu("customers");
   } catch (error) {
     addLog("Session", error.message, "error");
   }

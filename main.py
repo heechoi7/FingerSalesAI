@@ -1,5 +1,6 @@
 from pathlib import Path
 import base64
+from datetime import date
 from decimal import Decimal
 import hashlib
 import hmac
@@ -2789,6 +2790,8 @@ async def db_health():
 async def list_customers(
     request: Request,
     search: str = "",
+    company_name: str = "",
+    contact_name: str = "",
     limit: int = Query(default=100, ge=1, le=500),
 ):
     session = require_session(request)
@@ -2830,13 +2833,33 @@ async def list_customers(
              OR c.mobile LIKE %s
              OR c.email LIKE %s
           )
+          AND (%s = '' OR a.name LIKE %s)
+          AND (%s = '' OR c.name LIKE %s)
         ORDER BY c.created_at DESC, c.id DESC
         LIMIT %s
     """
     keyword = f"%{search.strip()}%"
+    company_keyword = f"%{company_name.strip()}%"
+    contact_keyword = f"%{contact_name.strip()}%"
     with db_connection() as connection:
         cursor = connection.cursor(dictionary=True)
-        cursor.execute(query, (current_tenant_id, current_user_id, search.strip(), keyword, keyword, keyword, keyword, limit))
+        cursor.execute(
+            query,
+            (
+                current_tenant_id,
+                current_user_id,
+                search.strip(),
+                keyword,
+                keyword,
+                keyword,
+                keyword,
+                company_name.strip(),
+                company_keyword,
+                contact_name.strip(),
+                contact_keyword,
+                limit,
+            ),
+        )
         customers = [contact_row_to_customer(row) for row in cursor.fetchall()]
     record_audit_event(
         session,
@@ -2844,10 +2867,295 @@ async def list_customers(
         "customer",
         None,
         None,
-        {"count": len(customers), "search": search.strip(), "limit": limit},
+        {
+            "count": len(customers),
+            "search": search.strip(),
+            "company_name": company_name.strip(),
+            "contact_name": contact_name.strip(),
+            "limit": limit,
+        },
         request,
     )
     return {"success": True, "customers": customers}
+
+
+@app.get("/api/opportunities")
+async def list_opportunities(
+    request: Request,
+    name: str = "",
+    status: str = "",
+    company_name: str = "",
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    session = require_session(request)
+    name_keyword = f"%{name.strip()}%"
+    status_keyword = f"%{status.strip()}%"
+    company_keyword = f"%{company_name.strip()}%"
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                o.id, o.name, o.status, o.amount, o.currency, o.probability_percent,
+                o.close_date, o.created_at, o.updated_at,
+                a.name AS company_name,
+                c.name AS contact_name,
+                ps.name AS stage_name,
+                ps.stage_code
+            FROM opportunities o
+            LEFT JOIN accounts a
+                   ON a.id = o.account_id
+                  AND a.tenant_id = o.tenant_id
+                  AND a.deleted_at IS NULL
+            LEFT JOIN contacts c
+                   ON c.id = o.contact_id
+                  AND c.tenant_id = o.tenant_id
+                  AND c.deleted_at IS NULL
+            LEFT JOIN pipeline_stages ps
+                   ON ps.id = o.pipeline_stage_id
+                  AND ps.tenant_id = o.tenant_id
+                  AND ps.deleted_at IS NULL
+            WHERE o.tenant_id = %s
+              AND o.owner_user_id = %s
+              AND o.deleted_at IS NULL
+              AND (%s = '' OR o.name LIKE %s)
+              AND (%s = '' OR o.status LIKE %s)
+              AND (%s = '' OR a.name LIKE %s)
+            ORDER BY o.updated_at DESC, o.id DESC
+            LIMIT %s
+            """,
+            (
+                session["tenant_id"],
+                session["user_id"],
+                name.strip(),
+                name_keyword,
+                status.strip(),
+                status_keyword,
+                company_name.strip(),
+                company_keyword,
+                limit,
+            ),
+        )
+        opportunities = admin_json_rows(cursor.fetchall())
+    record_audit_event(
+        session,
+        "list",
+        "opportunity",
+        None,
+        None,
+        {"count": len(opportunities), "name": name.strip(), "status": status.strip(), "company_name": company_name.strip()},
+        request,
+    )
+    return {"success": True, "opportunities": opportunities}
+
+
+@app.get("/api/calendar")
+async def list_calendar_events(
+    request: Request,
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+):
+    session = require_session(request)
+    start_date = date(year, month, 1)
+    end_date = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    events: list[dict[str, Any]] = []
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                m.id, 'meeting' AS source_type, m.title, m.status,
+                m.started_at AS starts_at, m.ended_at AS ends_at,
+                m.location, a.name AS company_name
+            FROM meetings m
+            LEFT JOIN accounts a
+                   ON a.id = m.account_id
+                  AND a.tenant_id = m.tenant_id
+                  AND a.deleted_at IS NULL
+            WHERE m.tenant_id = %s
+              AND m.organizer_user_id = %s
+              AND m.deleted_at IS NULL
+              AND m.started_at >= %s
+              AND m.started_at < %s
+            ORDER BY m.started_at, m.id
+            """,
+            (session["tenant_id"], session["user_id"], start_date, end_date),
+        )
+        events.extend(admin_json_rows(cursor.fetchall()))
+        cursor.execute(
+            """
+            SELECT
+                a.id, 'activity' AS source_type, a.subject AS title, a.status,
+                a.due_at AS starts_at, a.completed_at AS ends_at,
+                a.activity_type AS location, ac.name AS company_name
+            FROM activities a
+            LEFT JOIN accounts ac
+                   ON ac.id = a.account_id
+                  AND ac.tenant_id = a.tenant_id
+                  AND ac.deleted_at IS NULL
+            WHERE a.tenant_id = %s
+              AND a.owner_user_id = %s
+              AND a.deleted_at IS NULL
+              AND a.due_at >= %s
+              AND a.due_at < %s
+            ORDER BY a.due_at, a.id
+            """,
+            (session["tenant_id"], session["user_id"], start_date, end_date),
+        )
+        events.extend(admin_json_rows(cursor.fetchall()))
+        cursor.execute(
+            """
+            SELECT
+                ai.id, 'action_item' AS source_type, ai.title, ai.status,
+                ai.due_date AS starts_at, ai.completed_at AS ends_at,
+                ai.priority AS location, NULL AS company_name
+            FROM action_items ai
+            WHERE ai.tenant_id = %s
+              AND (ai.assignee_user_id = %s OR ai.reporter_user_id = %s)
+              AND ai.deleted_at IS NULL
+              AND ai.due_date >= %s
+              AND ai.due_date < %s
+            ORDER BY ai.due_date, ai.id
+            """,
+            (session["tenant_id"], session["user_id"], session["user_id"], start_date, end_date),
+        )
+        events.extend(admin_json_rows(cursor.fetchall()))
+    events.sort(key=lambda item: (str(item.get("starts_at") or ""), item.get("source_type") or "", item.get("id") or 0))
+    record_audit_event(session, "list", "calendar", None, None, {"count": len(events), "year": year, "month": month}, request)
+    return {"success": True, "year": year, "month": month, "events": events}
+
+
+@app.get("/api/quotes")
+async def list_quotes(
+    request: Request,
+    company_name: str = "",
+    contact_name: str = "",
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    session = require_session(request)
+    company_keyword = f"%{company_name.strip()}%"
+    contact_keyword = f"%{contact_name.strip()}%"
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                q.id, q.quote_no, q.title, q.status, q.currency, q.total_amount,
+                q.valid_until, q.sent_at, q.accepted_at, q.rejected_at, q.created_at, q.updated_at,
+                a.name AS company_name,
+                c.name AS contact_name,
+                o.name AS opportunity_name
+            FROM quotes q
+            LEFT JOIN accounts a
+                   ON a.id = q.account_id
+                  AND a.tenant_id = q.tenant_id
+                  AND a.deleted_at IS NULL
+            LEFT JOIN contacts c
+                   ON c.id = q.contact_id
+                  AND c.tenant_id = q.tenant_id
+                  AND c.deleted_at IS NULL
+            LEFT JOIN opportunities o
+                   ON o.id = q.opportunity_id
+                  AND o.tenant_id = q.tenant_id
+                  AND o.deleted_at IS NULL
+            WHERE q.tenant_id = %s
+              AND q.owner_user_id = %s
+              AND q.deleted_at IS NULL
+              AND (%s = '' OR a.name LIKE %s)
+              AND (%s = '' OR c.name LIKE %s)
+            ORDER BY q.updated_at DESC, q.id DESC
+            LIMIT %s
+            """,
+            (
+                session["tenant_id"],
+                session["user_id"],
+                company_name.strip(),
+                company_keyword,
+                contact_name.strip(),
+                contact_keyword,
+                limit,
+            ),
+        )
+        quotes = admin_json_rows(cursor.fetchall())
+    record_audit_event(
+        session,
+        "list",
+        "quote",
+        None,
+        None,
+        {"count": len(quotes), "company_name": company_name.strip(), "contact_name": contact_name.strip()},
+        request,
+    )
+    return {"success": True, "quotes": quotes}
+
+
+@app.get("/api/contracts")
+async def list_contracts(
+    request: Request,
+    company_name: str = "",
+    contact_name: str = "",
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    session = require_session(request)
+    company_keyword = f"%{company_name.strip()}%"
+    contact_keyword = f"%{contact_name.strip()}%"
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                ct.id, ct.contract_no, ct.title, ct.status, ct.currency, ct.contract_amount,
+                ct.start_date, ct.end_date, ct.signed_at, ct.activated_at, ct.terminated_at, ct.created_at, ct.updated_at,
+                a.name AS company_name,
+                c.name AS contact_name,
+                q.quote_no,
+                o.name AS opportunity_name
+            FROM contracts ct
+            LEFT JOIN accounts a
+                   ON a.id = ct.account_id
+                  AND a.tenant_id = ct.tenant_id
+                  AND a.deleted_at IS NULL
+            LEFT JOIN contacts c
+                   ON c.id = ct.contact_id
+                  AND c.tenant_id = ct.tenant_id
+                  AND c.deleted_at IS NULL
+            LEFT JOIN quotes q
+                   ON q.id = ct.quote_id
+                  AND q.tenant_id = ct.tenant_id
+                  AND q.deleted_at IS NULL
+            LEFT JOIN opportunities o
+                   ON o.id = ct.opportunity_id
+                  AND o.tenant_id = ct.tenant_id
+                  AND o.deleted_at IS NULL
+            WHERE ct.tenant_id = %s
+              AND ct.owner_user_id = %s
+              AND ct.deleted_at IS NULL
+              AND (%s = '' OR a.name LIKE %s)
+              AND (%s = '' OR c.name LIKE %s)
+            ORDER BY ct.updated_at DESC, ct.id DESC
+            LIMIT %s
+            """,
+            (
+                session["tenant_id"],
+                session["user_id"],
+                company_name.strip(),
+                company_keyword,
+                contact_name.strip(),
+                contact_keyword,
+                limit,
+            ),
+        )
+        contracts = admin_json_rows(cursor.fetchall())
+    record_audit_event(
+        session,
+        "list",
+        "contract",
+        None,
+        None,
+        {"count": len(contracts), "company_name": company_name.strip(), "contact_name": contact_name.strip()},
+        request,
+    )
+    return {"success": True, "contracts": contracts}
 
 
 @app.get("/api/customers/{customer_id}")
