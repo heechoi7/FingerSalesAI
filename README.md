@@ -423,6 +423,20 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 그리드 필터 입력/검색 버튼 정렬 조정
+
+변경 파일:
+- `styles.css`
+- `README.md`
+
+작업 내용:
+- 캘린더를 제외한 그리드 메뉴 필터에서 검색 텍스트 박스는 좌측 정렬되도록 조정했습니다.
+- 검색 아이콘 버튼은 기존처럼 필터 영역의 우측 끝에 유지했습니다.
+
+검증:
+- `node --check script.js`
+- `git diff --check`
+
 ### 2026-05-01: 그리드 필터와 스크롤 영역 밀도 조정
 
 변경 파일:

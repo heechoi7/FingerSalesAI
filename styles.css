@@ -589,7 +589,7 @@ h3 {
   grid-template-columns: repeat(3, minmax(96px, 180px)) minmax(30px, auto);
   gap: 6px;
   align-items: center;
-  justify-content: end;
+  justify-content: stretch;
 }
 
 .calendar-picker {
