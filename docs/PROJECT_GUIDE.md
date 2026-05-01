@@ -920,7 +920,51 @@ viewer
 - sales는 본인 데이터만 조회 가능
 - viewer는 읽기 전용
 
-### 6.4 민감 정보 관리
+### 6.4 공통 에러 응답과 장애 복구
+
+서버 API는 운영 환경에서 DB 오류나 시스템 오류가 발생해도 프로세스가 중단되지 않도록 공통 예외 처리 레이어를 사용합니다.
+
+공통 응답 형식:
+
+```json
+{
+  "success": false,
+  "message": "사용자에게 보여줄 오류 설명",
+  "error": "사용자에게 보여줄 오류 설명 / 에러코드: FSI-DB-DUPLICATE / 요청ID: ...",
+  "error_code": "FSI-DB-DUPLICATE",
+  "request_id": "요청 추적 ID",
+  "details": {
+    "situation": "오류 상황 설명",
+    "db_errno": 1062,
+    "sqlstate": "23000",
+    "retriable": false
+  }
+}
+```
+
+주요 에러코드:
+
+- `FSI-VALIDATION`: 입력값 검증 실패
+- `FSI-AUTH-REQUIRED`: 로그인 필요
+- `FSI-AUTH-FORBIDDEN`: 권한 부족
+- `FSI-NOT-FOUND`: 데이터 없음
+- `FSI-DB-DUPLICATE`: 중복 키 또는 중복 데이터
+- `FSI-DB-RELATION`: 외래키/참조 무결성 오류
+- `FSI-DB-CONNECTION`: DB 연결/인증/스키마 오류
+- `FSI-DB-TIMEOUT`: DB 잠금 대기, 데드락, 타임아웃
+- `FSI-DB-ERROR`: 기타 DB 오류
+- `FSI-SYSTEM-ERROR`: 미처리 시스템 오류
+
+운영 기준:
+
+- 모든 요청은 `X-Request-ID` 응답 헤더와 에러 응답의 `request_id`로 추적합니다.
+- `audit_logs.request_id`에는 요청 ID를 함께 남겨 화면 오류와 서버 로그/DB 로그를 연결합니다.
+- MySQL 오류 원문은 운영 환경에서는 사용자 응답에 노출하지 않습니다.
+- 개발 환경에서는 문제 진단을 위해 `details.db_message`를 제한 길이로 포함할 수 있습니다.
+- API 내부에서 DB 오류를 직접 잡는 경우에도 `database_error_response()`를 사용해 같은 응답 형식을 유지합니다.
+- DB 트랜잭션은 `db_connection()` 컨텍스트에서 예외 발생 시 rollback 처리되므로 실패한 요청이 반쯤 저장되지 않도록 합니다.
+
+### 6.5 민감 정보 관리
 
 문서에 기록하지 않는 값:
 
@@ -937,7 +981,7 @@ viewer
 - 해시 알고리즘 종류
 - 테스트 결과 상태 코드
 
-### 6.5 안정성 및 성능 기준
+### 6.6 안정성 및 성능 기준
 
 DB 연결:
 

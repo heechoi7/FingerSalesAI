@@ -19,13 +19,16 @@ import zipfile
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
+import mysql.connector
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from database import contact_row_to_customer, db_connection, init_db, none_if_blank, resolve_tenant_id
 
@@ -42,6 +45,33 @@ if not os.getenv("GOOGLE_API_KEY") and os.getenv("GEMINI_API_KEY"):
 from graph import app_graph, content_to_text, create_gemini_model
 
 app = FastAPI(title="FingerSalesAI")
+
+ERROR_MESSAGES = {
+    "FSI-VALIDATION": "입력값을 확인해 주세요.",
+    "FSI-AUTH-REQUIRED": "로그인이 필요합니다.",
+    "FSI-AUTH-FORBIDDEN": "권한이 부족합니다.",
+    "FSI-NOT-FOUND": "요청한 데이터를 찾지 못했습니다.",
+    "FSI-DB-DUPLICATE": "이미 등록된 데이터와 중복됩니다.",
+    "FSI-DB-RELATION": "연결된 데이터가 없거나 참조 관계가 올바르지 않습니다.",
+    "FSI-DB-CONNECTION": "데이터베이스 연결에 실패했습니다.",
+    "FSI-DB-TIMEOUT": "데이터베이스 응답이 지연되거나 잠금이 발생했습니다.",
+    "FSI-DB-ERROR": "데이터베이스 처리 중 오류가 발생했습니다.",
+    "FSI-SYSTEM-ERROR": "시스템 처리 중 오류가 발생했습니다.",
+}
+
+MYSQL_ERROR_MAP = {
+    1062: ("FSI-DB-DUPLICATE", 409, "중복 키 오류입니다. 같은 코드, 이메일, 문서번호, 이름 등이 이미 등록되어 있는지 확인해 주세요."),
+    1451: ("FSI-DB-RELATION", 409, "다른 데이터가 이 항목을 참조하고 있어 처리할 수 없습니다. 삭제 대신 비활성/소프트 삭제가 필요한지 확인해 주세요."),
+    1452: ("FSI-DB-RELATION", 400, "연결하려는 고객, 사용자, 영업기회, 견적 등 참조 데이터가 존재하지 않습니다."),
+    1045: ("FSI-DB-CONNECTION", 503, "DB 계정 인증에 실패했습니다. MYSQL_USER/MYSQL_PASSWORD 설정을 확인해 주세요."),
+    1049: ("FSI-DB-CONNECTION", 503, "DB 스키마를 찾을 수 없습니다. MYSQL_DATABASE 설정과 MySQL 생성 상태를 확인해 주세요."),
+    1205: ("FSI-DB-TIMEOUT", 503, "DB 잠금 대기 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요."),
+    1213: ("FSI-DB-TIMEOUT", 503, "DB 데드락이 감지되었습니다. 트랜잭션은 롤백되었으니 다시 시도해 주세요."),
+    2002: ("FSI-DB-CONNECTION", 503, "DB 서버에 연결할 수 없습니다. MySQL 서비스와 호스트/포트를 확인해 주세요."),
+    2003: ("FSI-DB-CONNECTION", 503, "DB 서버에 연결할 수 없습니다. MySQL 서비스와 호스트/포트를 확인해 주세요."),
+    2006: ("FSI-DB-CONNECTION", 503, "DB 연결이 끊어졌습니다. 잠시 후 다시 시도해 주세요."),
+    2013: ("FSI-DB-CONNECTION", 503, "DB 응답 중 연결이 끊어졌습니다. 잠시 후 다시 시도해 주세요."),
+}
 
 APP_ENV = os.getenv("APP_ENV", "development").lower()
 IS_PRODUCTION = APP_ENV in {"production", "prod"}
@@ -285,6 +315,18 @@ def startup() -> None:
 
 
 @app.middleware("http")
+async def attach_request_id(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or secrets.token_hex(12)
+    request.state.request_id = request_id
+    try:
+        response = await call_next(request)
+    except Exception:
+        raise
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -294,6 +336,46 @@ async def add_security_headers(request: Request, call_next):
     if IS_PRODUCTION:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    detail = exc.detail if isinstance(exc.detail, str) else "요청을 처리할 수 없습니다."
+    if exc.status_code == 401:
+        error_code = "FSI-AUTH-REQUIRED"
+    elif exc.status_code == 403:
+        error_code = "FSI-AUTH-FORBIDDEN"
+    elif exc.status_code == 404:
+        error_code = "FSI-NOT-FOUND"
+    elif exc.status_code in {400, 409, 413, 422, 429}:
+        error_code = "FSI-VALIDATION"
+    else:
+        error_code = "FSI-SYSTEM-ERROR"
+    return error_response(detail, exc.status_code, error_code, request)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    details = [
+        {
+            "field": ".".join(str(part) for part in error.get("loc", []) if part != "body"),
+            "message": error.get("msg", ""),
+            "type": error.get("type", ""),
+        }
+        for error in exc.errors()
+    ]
+    return error_response(ERROR_MESSAGES["FSI-VALIDATION"], 422, "FSI-VALIDATION", request, details)
+
+
+@app.exception_handler(mysql.connector.Error)
+async def mysql_exception_handler(request: Request, exc: mysql.connector.Error):
+    return database_error_response(exc, request)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    print(f"Unhandled error request_id={request_id_from(request)}: {exc}")
+    return error_response(ERROR_MESSAGES["FSI-SYSTEM-ERROR"], 500, "FSI-SYSTEM-ERROR", request)
 
 
 def client_ip(request: Request) -> str:
@@ -475,7 +557,7 @@ def write_audit_log(
             action,
             entity_type,
             entity_id,
-            "",
+            request_id_from(request),
             ip_address,
             user_agent,
             json.dumps(admin_json_row(before or {}), ensure_ascii=False),
@@ -692,8 +774,66 @@ def temporary_invite_password() -> str:
     return secrets.token_urlsafe(12)
 
 
-def internal_error_response(message: str = "요청 처리 중 오류가 발생했습니다.", status_code: int = 500) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"success": False, "error": message})
+def request_id_from(request: Request | None) -> str:
+    if not request:
+        return ""
+    return str(getattr(request.state, "request_id", "") or request.headers.get("x-request-id") or "")
+
+
+def error_response(
+    message: str,
+    status_code: int = 500,
+    error_code: str = "FSI-SYSTEM-ERROR",
+    request: Request | None = None,
+    details: dict[str, Any] | list[Any] | None = None,
+) -> JSONResponse:
+    request_id = request_id_from(request)
+    display_parts = [message]
+    if error_code:
+        display_parts.append(f"에러코드: {error_code}")
+    if request_id:
+        display_parts.append(f"요청ID: {request_id}")
+    content: dict[str, Any] = {
+        "success": False,
+        "message": message,
+        "error": " / ".join(display_parts),
+        "error_code": error_code,
+        "request_id": request_id,
+    }
+    if details is not None:
+        content["details"] = details
+    return JSONResponse(status_code=status_code, content=content)
+
+
+def internal_error_response(
+    message: str = "요청 처리 중 오류가 발생했습니다.",
+    status_code: int = 500,
+    error_code: str = "FSI-SYSTEM-ERROR",
+    request: Request | None = None,
+    details: dict[str, Any] | list[Any] | None = None,
+) -> JSONResponse:
+    return error_response(message, status_code, error_code, request, details)
+
+
+def classify_mysql_error(error: mysql.connector.Error) -> tuple[str, int, str, dict[str, Any]]:
+    errno = int(getattr(error, "errno", 0) or 0)
+    sqlstate = getattr(error, "sqlstate", "") or ""
+    error_code, status_code, situation = MYSQL_ERROR_MAP.get(errno, ("FSI-DB-ERROR", 500, ERROR_MESSAGES["FSI-DB-ERROR"]))
+    details: dict[str, Any] = {
+        "db_errno": errno,
+        "sqlstate": sqlstate,
+        "situation": situation,
+        "retriable": error_code in {"FSI-DB-CONNECTION", "FSI-DB-TIMEOUT"},
+    }
+    if not IS_PRODUCTION:
+        details["db_message"] = str(error)[:500]
+    return error_code, status_code, situation, details
+
+
+def database_error_response(error: mysql.connector.Error, request: Request | None = None) -> JSONResponse:
+    error_code, status_code, situation, details = classify_mysql_error(error)
+    print(f"DB error {error_code} request_id={request_id_from(request)} errno={details.get('db_errno')} sqlstate={details.get('sqlstate')}: {error}")
+    return error_response(situation, status_code, error_code, request, details)
 
 
 def enforce_content_length(request: Request, max_bytes: int) -> None:
@@ -4145,9 +4285,11 @@ async def extract_business_card(
         }
     except HTTPException:
         raise
+    except mysql.connector.Error as error:
+        return database_error_response(error, request)
     except Exception as error:
         print("Business card extraction failed:", error)
-        return internal_error_response("이미지 분석 중 오류가 발생했습니다.")
+        return internal_error_response("이미지 분석 중 오류가 발생했습니다.", request=request)
 
 
 @app.post("/api/extract/document")
@@ -4280,9 +4422,11 @@ async def extract_sns_links(payload: SnsLinksRequest, request: Request):
         return {"success": True, "count": saved_count, "pending_count": pending_count, "items": items}
     except HTTPException:
         raise
+    except mysql.connector.Error as error:
+        return database_error_response(error, request)
     except Exception as error:
         print("SNS extraction failed:", error)
-        return internal_error_response("SNS 링크 처리 중 오류가 발생했습니다.")
+        return internal_error_response("SNS 링크 처리 중 오류가 발생했습니다.", request=request)
 
 
 @app.post("/api/inspect/sns")
@@ -4308,9 +4452,11 @@ async def inspect_sns_links(payload: SnsLinksRequest, request: Request):
             )
     except HTTPException:
         raise
+    except mysql.connector.Error as error:
+        return database_error_response(error, request)
     except Exception as error:
         print("SNS customer command preflight failed:", error)
-        return internal_error_response("고객 정보를 먼저 확인하는 중 오류가 발생했습니다.")
+        return internal_error_response("고객 정보를 먼저 확인하는 중 오류가 발생했습니다.", request=request)
 
     if customer_candidates:
         record_audit_event(
@@ -4352,9 +4498,11 @@ async def inspect_sns_links(payload: SnsLinksRequest, request: Request):
         }
     except HTTPException:
         raise
+    except mysql.connector.Error as error:
+        return database_error_response(error, request)
     except Exception as error:
         print("SNS inspection failed:", error)
-        return internal_error_response("SNS 링크 정보를 확인하는 중 오류가 발생했습니다.")
+        return internal_error_response("SNS 링크 정보를 확인하는 중 오류가 발생했습니다.", request=request)
 
 
 @app.get("/api/documents/{document_id}/download")
@@ -4408,9 +4556,11 @@ async def db_health():
             cursor.execute("SELECT 1")
             cursor.fetchone()
         return {"success": True, "status": "ok"}
+    except mysql.connector.Error as error:
+        return database_error_response(error)
     except Exception as error:
         print("DB health check failed:", error)
-        return internal_error_response("DB 상태를 확인할 수 없습니다.", status_code=503)
+        return internal_error_response("DB 상태를 확인할 수 없습니다.", status_code=503, error_code="FSI-DB-CONNECTION", request=None)
 
 
 @app.get("/api/customers")
@@ -4893,9 +5043,11 @@ async def chat(chat_request: ChatRequest, request: Request):
             )
     except HTTPException:
         raise
+    except mysql.connector.Error as error:
+        return database_error_response(error, request)
     except Exception as error:
         print("Customer command preflight failed:", error)
-        return internal_error_response("고객 정보를 먼저 확인하는 중 오류가 발생했습니다.")
+        return internal_error_response("고객 정보를 먼저 확인하는 중 오류가 발생했습니다.", request=request)
 
     selected_customer = effective_context.get("selectedCustomer") if isinstance(effective_context, dict) else None
     selected_customer_id = (
@@ -4960,9 +5112,11 @@ async def chat(chat_request: ChatRequest, request: Request):
             }
         except HTTPException:
             raise
+        except mysql.connector.Error as error:
+            return database_error_response(error, request)
         except Exception as error:
             print("SNS chat inspection failed:", error)
-            return internal_error_response("SNS 링크 정보를 확인하는 중 오류가 발생했습니다.")
+            return internal_error_response("SNS 링크 정보를 확인하는 중 오류가 발생했습니다.", request=request)
 
     if is_sales_activity_schedule_request(message):
         try:
@@ -4980,9 +5134,11 @@ async def chat(chat_request: ChatRequest, request: Request):
             }
         except HTTPException:
             raise
+        except mysql.connector.Error as error:
+            return database_error_response(error, request)
         except Exception as error:
             print("Sales activity schedule failed:", error)
-            return internal_error_response("영업활동 일정을 저장하는 중 오류가 발생했습니다.")
+            return internal_error_response("영업활동 일정을 저장하는 중 오류가 발생했습니다.", request=request)
 
     try:
         model = create_gemini_model(temperature=0.3)
@@ -5033,9 +5189,11 @@ async def chat(chat_request: ChatRequest, request: Request):
         }
     except HTTPException:
         raise
+    except mysql.connector.Error as error:
+        return database_error_response(error, request)
     except Exception as error:
         print("Chat failed:", error)
-        return internal_error_response("답변 생성 중 오류가 발생했습니다.")
+        return internal_error_response("답변 생성 중 오류가 발생했습니다.", request=request)
 
 
 @app.get("/", response_class=HTMLResponse)

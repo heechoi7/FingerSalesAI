@@ -128,6 +128,15 @@
         );
       }
 
+      function apiErrorMessage(result, fallback) {
+        const parts = [result?.message || result?.detail || result?.error || fallback];
+        if (result?.error_code) parts.push(`에러코드: ${result.error_code}`);
+        if (result?.details?.situation) parts.push(`상황: ${result.details.situation}`);
+        if (result?.details?.db_errno) parts.push(`DB 오류번호: ${result.details.db_errno}`);
+        if (result?.request_id) parts.push(`요청ID: ${result.request_id}`);
+        return parts.filter(Boolean).join(" / ");
+      }
+
       authTabs.forEach((tab) => {
         tab.addEventListener("click", () => setAuthMode(tab.dataset.authMode));
       });
@@ -154,7 +163,7 @@
           });
           const result = await response.json();
           if (!response.ok || !result.success) {
-            throw new Error(result.detail || result.error || "로그인 정보를 확인해 주세요.");
+            throw new Error(apiErrorMessage(result, "로그인 정보를 확인해 주세요."));
           }
           rememberLogin(payload.tenant_code, payload.email);
           window.location.replace("/");
@@ -191,7 +200,7 @@
           });
           const result = await response.json();
           if (!response.ok || !result.success) {
-            throw new Error(result.detail || result.error || "회원가입 정보를 확인해 주세요.");
+            throw new Error(apiErrorMessage(result, "회원가입 정보를 확인해 주세요."));
           }
           rememberLogin(payload.tenant_code, payload.email);
           loginForm.elements.tenant_code.value = payload.tenant_code;

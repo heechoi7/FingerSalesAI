@@ -175,7 +175,12 @@ function redirectToLogin() {
 }
 
 function apiErrorMessage(result, fallback) {
-  return result?.error || result?.detail || fallback;
+  const parts = [result?.message || result?.detail || result?.error || fallback];
+  if (result?.error_code) parts.push(`에러코드: ${result.error_code}`);
+  if (result?.details?.situation) parts.push(`상황: ${result.details.situation}`);
+  if (result?.details?.db_errno) parts.push(`DB 오류번호: ${result.details.db_errno}`);
+  if (result?.request_id) parts.push(`요청ID: ${result.request_id}`);
+  return parts.filter(Boolean).join(" / ");
 }
 
 async function apiFetch(url, options = {}) {

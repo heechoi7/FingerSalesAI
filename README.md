@@ -422,6 +422,32 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: DB/시스템 에러 응답 코드와 예외 처리 강화
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `login.html`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 모든 요청에 `X-Request-ID`를 부여하고 에러 응답에도 `request_id`를 포함하도록 했습니다.
+- 공통 에러 응답 형식을 `success=false`, `message`, `error`, `error_code`, `request_id`, `details`로 정리했습니다.
+- FastAPI HTTP 예외, 입력 검증 오류, MySQL 오류, 미처리 시스템 오류에 대한 전역 exception handler를 추가했습니다.
+- MySQL 오류는 중복 키, 참조 무결성, 연결 실패, 잠금/데드락/타임아웃, 일반 DB 오류로 분류해 `FSI-DB-*` 에러코드와 상황 설명을 반환합니다.
+- 각 API 내부에서 잡는 DB 오류도 공통 DB 에러 응답을 사용하도록 보강했습니다.
+- 메인 화면과 로그인 화면은 서버가 내려준 `error_code`, `request_id`, DB 오류번호, 상황 설명을 사용자 메시지에 포함합니다.
+- 감사 로그의 `request_id` 컬럼에 실제 요청 ID를 기록하도록 변경했습니다.
+
+검증:
+- `.venv\Scripts\python.exe -m py_compile main.py database.py graph.py tests\test_security_regressions.py`
+- `.venv\Scripts\python.exe -m unittest discover -s tests`
+- `node --check script.js`
+- `.venv\Scripts\python.exe -c "import main; print('app import ok')"`
+- FastAPI TestClient로 인증 없는 `/api/customers` 요청이 `FSI-AUTH-REQUIRED`와 `request_id`를 반환하는지 확인
+
 ### 2026-05-01: 드래그앤드롭 파일 중복 첨부 방지
 
 변경 파일:

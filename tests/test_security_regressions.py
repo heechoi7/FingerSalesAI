@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import database
 import main
+import mysql.connector
+import json
 
 
 class FakeCursor:
@@ -334,6 +336,23 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(info.document_type, "quote")
         self.assertEqual(info.company_name, "Acme Korea")
         self.assertEqual(info.total_amount, 1200000.0)
+
+    def test_mysql_duplicate_error_is_mapped_to_conflict_code(self):
+        error = mysql.connector.Error(errno=1062, msg="Duplicate entry")
+
+        error_code, status_code, _situation, details = main.classify_mysql_error(error)
+
+        self.assertEqual(error_code, "FSI-DB-DUPLICATE")
+        self.assertEqual(status_code, 409)
+        self.assertEqual(details["db_errno"], 1062)
+
+    def test_error_response_includes_error_code_and_request_id(self):
+        response = main.error_response("테스트 오류", 500, "FSI-SYSTEM-ERROR")
+        body = json.loads(response.body)
+
+        self.assertFalse(body["success"])
+        self.assertEqual(body["error_code"], "FSI-SYSTEM-ERROR")
+        self.assertIn("request_id", body)
 
 
 if __name__ == "__main__":
