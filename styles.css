@@ -349,9 +349,12 @@ a {
   gap: 0;
 }
 
-.workspace.focus-left,
-.workspace.focus-chat {
+.workspace.focus-left {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace.focus-chat {
+  grid-template-columns: minmax(0, 1fr) 10px minmax(240px, var(--right-size));
 }
 
 .panel {
@@ -402,16 +405,26 @@ a {
 .workspace.focus-left .splitter-left,
 .workspace.focus-left .splitter-right,
 .workspace.focus-chat .left-panel,
-.workspace.focus-chat .right-panel,
-.workspace.focus-chat .splitter-left,
-.workspace.focus-chat .splitter-right {
+.workspace.focus-chat .splitter-left {
   display: none;
 }
 
-.workspace.focus-left .left-panel,
-.workspace.focus-chat .chat-panel {
+.workspace.focus-left .left-panel {
   grid-column: 1;
   border-radius: 8px;
+}
+
+.workspace.focus-chat .chat-panel {
+  grid-column: 1;
+  border-radius: 8px 0 0 8px;
+}
+
+.workspace.focus-chat .splitter-right {
+  grid-column: 2;
+}
+
+.workspace.focus-chat .right-panel {
+  grid-column: 3;
 }
 
 .panel-header {
