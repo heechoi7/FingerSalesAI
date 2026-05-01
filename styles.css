@@ -900,6 +900,28 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.sns-result-list li {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+.sns-result-list strong {
+  color: var(--charcoal);
+  font-size: 12px;
+}
+
+.sns-result-list .sns-result-title {
+  font-weight: 700;
+}
+
+.sns-result-list small,
+.sns-result-list .sns-result-reason {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .briefing-kicker {
   color: var(--brand);
   font-size: 11px;

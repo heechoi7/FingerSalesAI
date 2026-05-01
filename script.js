@@ -717,11 +717,19 @@ function buildSnsImportHtml(items) {
     .map((item) => {
       const data = item.data || {};
       const status = item.saved ? "저장 완료" : "이름 확인 필요";
-      const label = `${item.platform || "SNS"} · ${data["회사명"] || data["이름"] || item.url}`;
+      const nameText = data["이름"] || item.name_candidate || "";
+      const label = data["회사명"] || nameText || "프로필 이름 미확정";
+      const reason = item.saved
+        ? item.url || data["홈페이지"] || "-"
+        : item.name_candidate
+          ? `이름 후보: ${item.name_candidate} · ${item.reason || "사용자 확인이 필요합니다."}`
+          : item.reason || "프로필 이름을 확정하지 못했습니다.";
       return `
-        <li>
-          <strong>${escapeHtml(status)} · ${escapeHtml(label)}</strong>
-          <span>${escapeHtml(item.reason || item.url || data["홈페이지"] || "-")}</span>
+        <li class="sns-result-item">
+          <strong>${escapeHtml(status)}</strong>
+          <span class="sns-result-title">${escapeHtml(item.platform || "SNS")} · ${escapeHtml(label)}</span>
+          <small>${escapeHtml(item.url || data["홈페이지"] || "-")}</small>
+          <span class="sns-result-reason">${escapeHtml(reason)}</span>
         </li>
       `;
     })
@@ -731,7 +739,7 @@ function buildSnsImportHtml(items) {
     pendingItems.length > 0
       ? `SNS 링크를 확인했습니다. 이름이 확인된 ${savedItems.length}건은 저장했고, ${pendingItems.length}건은 프로필 이름을 확정하지 못해 저장하지 않았습니다.`
       : `SNS 링크 ${savedItems.length}건을 고객 정보로 저장했습니다.`;
-  return `<p>${escapeHtml(summary)}</p><ul class="card-result-list">${rows}</ul>`;
+  return `<p>${escapeHtml(summary)}</p><ul class="card-result-list sns-result-list">${rows}</ul>`;
 }
 
 function buildBriefingHtml(briefing) {

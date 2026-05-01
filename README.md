@@ -742,6 +742,28 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 - 공개 메타데이터 이름이 없는 Facebook 링크 단위 테스트에서 `saved=False`, `needs_confirmation=True`, `customer=None` 확인
 - 공개 메타데이터 이름이 있는 경우 `contact_name=박광영`, `name_verified=True`, 충돌한 회사/이메일 제거 확인
 
+### 2026-05-01: SNS 결과 표시 및 LinkedIn 이름형 URL 처리 개선
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `styles.css`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- SNS 처리 결과 카드가 명함 결과용 2열 레이아웃을 사용하면서 긴 URL과 안내 문구가 겹쳐 보이는 문제를 수정했습니다.
+- SNS 결과 목록은 1열 전용 레이아웃으로 표시하고, 상태/대상/URL/사유를 줄 단위로 분리했습니다.
+- Facebook/LinkedIn 공개 페이지 접근이 막히는 경우를 줄이기 위해 Facebook은 `www`, `m`, `mbasic`, LinkedIn은 `www`, `kr` 후보 URL의 공개 메타데이터를 순차 확인합니다.
+- LinkedIn 개인 URL slug가 `희진-김-9b0b62278`처럼 이름 토큰 2개 이상을 포함하면 검색 결과가 아닌 URL 직접 근거로 이름을 사용할 수 있도록 보완했습니다.
+- 숫자 ID, 해시성 토큰, 일반 영문 단일 핸들은 이름으로 저장하지 않습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py` 통과
+- LinkedIn URL slug `%ED%9D%AC%EC%A7%84-%EA%B9%80-9b0b62278`에서 내부 유니코드 기준 `희진 김` 추출 확인
+- 공개 메타데이터가 없어도 이름형 LinkedIn URL slug는 `name_verified=True`, `name_source=linkedin_profile_url_slug`로 처리되는 것 확인
+
 ### 2026-05-01: 클라우드 SaaS 운영 기준 보안/안정성 보강
 
 변경 파일:

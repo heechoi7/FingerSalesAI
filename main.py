@@ -396,6 +396,50 @@ def readable_handle(value: str) -> str:
     return text or "SNS 프로필"
 
 
+def social_name_candidate_from_slug(platform: str, entity_type: str, handle: str) -> str:
+    if platform != "LinkedIn" or entity_type != "person" or not handle:
+        return ""
+
+    decoded = handle.strip("@")
+    for _ in range(2):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+
+    tokens = [
+        token.strip()
+        for token in re.split(r"[-_\s.]+", decoded)
+        if token.strip()
+    ]
+    ignored = {"in", "pub", "profile", "linkedin", "www", "m", "kr"}
+    name_tokens = []
+    for token in tokens:
+        lowered = token.lower()
+        if lowered in ignored:
+            continue
+        if "%" in token or "\ufffd" in token:
+            continue
+        if any(char.isdigit() for char in token):
+            continue
+        if re.fullmatch(r"[a-f0-9]{6,}", lowered):
+            continue
+        if re.search(r"[가-힣A-Za-z]", token):
+            name_tokens.append(token)
+
+    if len(name_tokens) < 2:
+        return ""
+
+    has_hangul = any(re.search(r"[가-힣]", token) for token in name_tokens)
+    if has_hangul:
+        return " ".join(name_tokens[:3])
+
+    if all(re.fullmatch(r"[A-Za-z]{2,}", token) for token in name_tokens[:3]):
+        return " ".join(token[:1].upper() + token[1:].lower() for token in name_tokens[:3])
+
+    return ""
+
+
 def classify_social_link(url: str, platform: str) -> dict[str, Any]:
     parsed = urlparse(url)
     parts = [part for part in parsed.path.split("/") if part]
@@ -423,12 +467,14 @@ def classify_social_link(url: str, platform: str) -> dict[str, Any]:
             handle = parts[1]
 
     display_name = readable_handle(handle or parsed.netloc)
+    name_candidate = social_name_candidate_from_slug(platform, entity_type, handle)
     return {
         "url": url,
         "platform": platform,
         "entity_type": entity_type,
         "handle": handle.strip("@"),
         "display_name": display_name,
+        "name_candidate": name_candidate,
     }
 
 
@@ -500,39 +546,70 @@ def html_metadata_value(document: str, *keys: str) -> str:
     return ""
 
 
+def social_metadata_candidate_urls(link: dict[str, Any]) -> list[str]:
+    urls = [link["url"]]
+    parsed = urlparse(link["url"])
+    host = parsed.netloc.lower()
+    if link["platform"] == "Facebook":
+        path = parsed.path or "/"
+        query = parsed.query
+        for facebook_host in ("www.facebook.com", "m.facebook.com", "mbasic.facebook.com"):
+            urls.append(urlunparse((parsed.scheme, facebook_host, path, "", query, "")))
+    elif link["platform"] == "LinkedIn":
+        path = parsed.path or "/"
+        query = parsed.query
+        for linkedin_host in ("www.linkedin.com", "kr.linkedin.com"):
+            urls.append(urlunparse((parsed.scheme, linkedin_host, path, "", query, "")))
+
+    seen = set()
+    unique_urls = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
+    return unique_urls
+
+
 def fetch_social_public_metadata(link: dict[str, Any]) -> dict[str, str]:
     metadata = {"title": "", "og_title": "", "twitter_title": "", "description": "", "og_description": "", "fetch_error": ""}
-    try:
-        request = UrlRequest(
-            link["url"],
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-                ),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-            },
-        )
-        with urlopen(request, timeout=6) as response:
-            raw = response.read(300_000)
-            charset = response.headers.get_content_charset() or "utf-8"
+    errors = []
+    for url in social_metadata_candidate_urls(link):
         try:
-            document = raw.decode(charset, errors="replace")
-        except LookupError:
-            document = raw.decode("utf-8", errors="replace")
-        title_match = re.search(r"<title[^>]*>(.*?)</title>", document, re.IGNORECASE | re.DOTALL)
-        metadata.update(
-            {
+            request = UrlRequest(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                },
+            )
+            with urlopen(request, timeout=6) as response:
+                raw = response.read(300_000)
+                charset = response.headers.get_content_charset() or "utf-8"
+            try:
+                document = raw.decode(charset, errors="replace")
+            except LookupError:
+                document = raw.decode("utf-8", errors="replace")
+            title_match = re.search(r"<title[^>]*>(.*?)</title>", document, re.IGNORECASE | re.DOTALL)
+            candidate = {
                 "title": clean_html_text(title_match.group(1)) if title_match else "",
                 "og_title": html_metadata_value(document, "og:title"),
                 "twitter_title": html_metadata_value(document, "twitter:title"),
                 "description": html_metadata_value(document, "description"),
                 "og_description": html_metadata_value(document, "og:description"),
+                "source_url": url,
             }
-        )
-    except Exception as error:
-        metadata["fetch_error"] = str(error)
+            if social_profile_name_from_metadata(candidate, link["platform"]):
+                metadata.update(candidate)
+                return metadata
+            if not metadata.get("title") and any(candidate.values()):
+                metadata.update(candidate)
+        except Exception as error:
+            errors.append(f"{url}: {error}")
+    metadata["fetch_error"] = " | ".join(errors)
     return metadata
 
 
@@ -613,12 +690,18 @@ def extracted_name_conflicts(metadata_name: str, extracted_name: str) -> bool:
 def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
     public_metadata = fetch_social_public_metadata(link)
     metadata_name = social_profile_name_from_metadata(public_metadata, link["platform"])
+    slug_name = link.get("name_candidate") or social_name_candidate_from_slug(
+        link.get("platform", ""),
+        link.get("entity_type", ""),
+        link.get("handle", ""),
+    )
     query_parts = [
         f'"{link["url"]}"',
         link["platform"],
         link.get("handle") or "",
         link.get("display_name") or "",
         metadata_name,
+        slug_name,
         public_metadata.get("og_title", ""),
         public_metadata.get("title", ""),
         "profile company career",
@@ -662,25 +745,33 @@ def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
         extracted = {"briefing": f"SNS 상세 브리핑 생성 중 오류가 발생했습니다: {error}"}
 
     extracted_name = str(extracted.get("contact_name") or "").strip()
-    authoritative_metadata_name = metadata_name if metadata_name_is_authoritative(link, metadata_name) else ""
-    if authoritative_metadata_name:
-        if extracted_name_conflicts(authoritative_metadata_name, extracted_name):
+    authoritative_name = ""
+    name_source = ""
+    if metadata_name and metadata_name_is_authoritative(link, metadata_name):
+        authoritative_name = metadata_name
+        name_source = "public_profile_metadata"
+    elif slug_name:
+        authoritative_name = slug_name
+        name_source = "linkedin_profile_url_slug"
+
+    if authoritative_name:
+        if extracted_name_conflicts(authoritative_name, extracted_name):
             extracted = {
-                "contact_name": authoritative_metadata_name,
+                "contact_name": authoritative_name,
                 "company_name": "",
                 "job_title": "",
                 "job_position": "",
                 "email": "",
-                "summary": f"{link['platform']} 공개 프로필 제목에서 확인한 이름입니다.",
+                "summary": f"{link['platform']} 프로필의 직접 근거에서 확인한 이름입니다.",
                 "briefing": (
-                    f"{link['platform']} 공개 프로필 메타데이터에서 '{authoritative_metadata_name}' 이름을 확인했습니다. "
+                    f"{link['platform']} 프로필 직접 근거에서 '{authoritative_name}' 이름을 확인했습니다. "
                     "검색 결과의 다른 인물 정보와 충돌해 회사, 직책, 연락처는 확정하지 않았습니다."
                 ),
             }
         else:
-            extracted["contact_name"] = authoritative_metadata_name
+            extracted["contact_name"] = authoritative_name
 
-    name_verified = bool(authoritative_metadata_name)
+    name_verified = bool(authoritative_name)
     if link.get("entity_type") in {"person", "profile"} and not name_verified:
         extracted["contact_name"] = ""
 
@@ -693,7 +784,8 @@ def enrich_social_link(link: dict[str, Any]) -> dict[str, Any]:
         "summary": str(extracted.get("summary") or "").strip(),
         "briefing": str(extracted.get("briefing") or "").strip(),
         "name_verified": name_verified,
-        "name_source": "public_profile_metadata" if name_verified else "",
+        "name_source": name_source,
+        "name_candidate": slug_name,
         "public_metadata": public_metadata,
         "search_results": search_results,
     }
@@ -709,6 +801,7 @@ def social_link_needs_name_confirmation(link: dict[str, Any], enriched: dict[str
 def build_sns_confirmation_item(link: dict[str, Any], enriched_link: dict[str, Any]) -> dict[str, Any]:
     enriched = enriched_link.get("enriched", {})
     metadata = enriched.get("public_metadata") or {}
+    name_candidate = enriched.get("name_candidate") or link.get("name_candidate") or ""
     reason = (
         f"{link['platform']} 링크에서 공개 프로필 이름을 확정하지 못했습니다. "
         "검색/AI 결과만으로는 다른 사람 정보가 섞일 수 있어 고객으로 저장하지 않았습니다. "
@@ -721,9 +814,10 @@ def build_sns_confirmation_item(link: dict[str, Any], enriched_link: dict[str, A
         "saved": False,
         "needs_confirmation": True,
         "reason": reason,
+        "name_candidate": name_candidate,
         "data": {
             "회사명": "",
-            "이름": "",
+            "이름": name_candidate,
             "직무": "SNS 프로필 이름 확인 필요",
             "직위": link["platform"],
             "휴대전화": "",
