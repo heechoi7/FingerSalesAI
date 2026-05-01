@@ -930,17 +930,26 @@ h3 {
   background: var(--surface);
 }
 
-.chat-input input {
+.chat-input input,
+.chat-input textarea {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0 15px;
+  padding: 13px 15px;
   color: var(--text);
   font-size: 13px;
+  font-family: inherit;
   outline: none;
 }
 
-.chat-input input:focus {
+.chat-input textarea {
+  line-height: 1.45;
+  overflow-y: auto;
+  resize: none;
+}
+
+.chat-input input:focus,
+.chat-input textarea:focus {
   border-color: rgba(215, 53, 53, 0.58);
   box-shadow: 0 0 0 4px rgba(215, 53, 53, 0.1);
 }
@@ -955,8 +964,59 @@ h3 {
   gap: 8px;
 }
 
-.composer-main input {
+.composer-main input,
+.composer-main textarea {
   min-height: 46px;
+  max-height: 132px;
+}
+
+.message p {
+  white-space: pre-wrap;
+}
+
+.customer-selection {
+  display: grid;
+  gap: 8px;
+}
+
+.customer-selection-header {
+  margin: 0 0 2px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.customer-selection-list {
+  display: grid;
+  gap: 6px;
+}
+
+.customer-select-btn {
+  width: 100%;
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px 10px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.customer-select-btn:hover,
+.customer-select-btn:focus {
+  border-color: rgba(215, 53, 53, 0.48);
+  box-shadow: 0 0 0 3px rgba(215, 53, 53, 0.08);
+  outline: none;
+}
+
+.customer-select-btn strong {
+  font-size: 13px;
+}
+
+.customer-select-btn span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .drop-hint {

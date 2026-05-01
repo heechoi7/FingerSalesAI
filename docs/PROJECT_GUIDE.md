@@ -526,11 +526,23 @@ FSAI_EXTRA_ENV_PATH=
 지원 기능:
 
 - 텍스트 질문
+- Shift+Enter 줄바꿈, Enter 명령 전송
 - 이미지 파일 첨부
 - 명함 이미지 인식
 - 회사 브리핑 생성
 - Tavily 검색 기반 답변
 - 최근 대화/고객 컨텍스트 전달
+
+명령 처리 전 고객 선확인:
+
+1. 사용자가 에이전트 입력창에 회사명 또는 고객명을 포함해 명령을 입력합니다.
+2. `script.js`는 메시지와 현재 `selectedCustomer`, 최근 카드, 최근 대화 기록을 `/api/chat`에 전달합니다.
+3. `main.py`의 `/api/chat`은 SNS, 일정, LLM 처리보다 먼저 `resolve_command_customer_preflight()`를 실행합니다.
+4. 고객 후보 조회는 `contacts.tenant_id = session.tenant_id`, `contacts.owner_user_id = session.user_id`, `contacts.deleted_at IS NULL`, `accounts.deleted_at IS NULL` 범위에서만 수행합니다.
+5. 회사명 또는 고객명 매칭 후보가 1건이면 서버가 해당 고객을 `selectedCustomer` 컨텍스트에 자동 주입하고 원래 명령을 계속 처리합니다.
+6. 후보가 여러 건이면 서버가 `customer_selection_required=true`, `pending_message`, `candidates`를 반환합니다.
+7. 프론트는 후보 버튼을 채팅창에 표시하고, 사용자가 선택하면 그 고객을 `memory.selectedCustomer`와 상세 패널에 반영한 뒤 같은 명령을 다시 호출합니다.
+8. 이 흐름은 `/api/chat`에 들어오는 모든 명령의 공통 전처리이며, 앞으로 새 명령을 추가할 때도 이 전처리 뒤에 붙입니다.
 
 채팅 컨텍스트 우선순위:
 
@@ -1069,7 +1081,7 @@ uv run python -c "import main; print('app import ok')"
 처리 흐름:
 1. 사용자가 에이전트 입력창에 SNS 링크를 입력합니다.
 2. `script.js`가 LinkedIn, Instagram, Facebook, X, YouTube, TikTok, GitHub, Naver Blog, Medium 링크를 감지합니다.
-3. SNS 링크가 있으면 일반 `/api/chat` 요청 대신 `/api/inspect/sns`로 전송합니다.
+3. SNS 링크가 있으면 일반 `/api/chat` 요청 대신 `/api/inspect/sns`로 전송하되, 현재 채팅 컨텍스트도 함께 전달합니다.
 4. 서버는 세션 쿠키를 검증합니다.
 5. `main.py`가 URL을 플랫폼별로 구분하고 개인/회사/채널/블로그/프로필 유형을 판단합니다.
 6. 서버가 공개 프로필 HTML에 접근할 수 있으면 `og:title`, `twitter:title`, `title`, `description` 메타데이터를 읽습니다.
@@ -1077,6 +1089,7 @@ uv run python -c "import main; print('app import ok')"
 8. inspect 결과는 플랫폼, 대상 유형, 핸들, 이름 후보, 공개 설명, 후보 fetch URL, 저장 가능 여부를 반환합니다.
 9. 현재 프론트 흐름은 이 단계에서 고객 DB에 저장하지 않습니다.
 10. 기존 `/api/extract/sns` 저장 API는 호환용으로 남겨두며, 후속 저장 판단이 필요할 때 사용합니다.
+11. SNS 메시지에 기존 고객 회사명/고객명이 포함되어 후보가 여러 건이면 `/api/inspect/sns`도 `customer_selection_required=true`를 반환하고, 프론트는 같은 고객 선택 UI로 명령을 이어갑니다.
 
 이름 저장 원칙:
 - 개인/프로필 SNS 링크의 `이름`은 공개 프로필 메타데이터나 프로필 화면 캡처처럼 직접 확인 가능한 근거가 있을 때만 저장합니다.

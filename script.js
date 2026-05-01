@@ -1,5 +1,6 @@
 const workspace = document.querySelector(".workspace");
 const chatInput = document.querySelector(".chat-input");
+const commandInput = document.querySelector("[data-command-input]");
 const chatStream = document.querySelector(".chat-stream");
 const canvasTitle = document.querySelector("#canvas-title");
 const canvasArea = document.querySelector(".canvas-area");
@@ -21,6 +22,7 @@ const dropTargets = [document.querySelector(".chat-panel"), document.querySelect
 
 let dragState = null;
 let pendingFiles = [];
+const pendingCustomerCommands = new Map();
 let isSubmitting = false;
 let isLoadingCustomers = false;
 let questionSequence = 0;
@@ -866,6 +868,78 @@ function getConversationContext() {
   };
 }
 
+function customerSelectionLabel(customer) {
+  const company = customer?.company_name || customer?.card_data?.["회사명"] || "회사명 미확인";
+  const name = customer?.contact_name || customer?.card_data?.["이름"] || "이름 미확인";
+  return `${company} / ${name}`;
+}
+
+function customerSelectionMeta(customer) {
+  return [
+    customer?.job_title,
+    customer?.job_position,
+    customer?.mobile_phone,
+    customer?.email,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function buildCustomerSelectionHtml(result) {
+  const commandId = window.crypto?.randomUUID ? window.crypto.randomUUID() : `cmd-${Date.now()}-${Math.random()}`;
+  const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+  pendingCustomerCommands.set(commandId, {
+    message: result.pending_message || "",
+    candidates,
+  });
+
+  const rows = candidates
+    .map((customer, index) => {
+      const label = customerSelectionLabel(customer);
+      const meta = customerSelectionMeta(customer) || "상세 정보 없음";
+      return `
+        <button class="customer-select-btn" type="button" data-command-id="${escapeHtml(commandId)}" data-customer-index="${index}">
+          <strong>${escapeHtml(label)}</strong>
+          <span>${escapeHtml(meta)}</span>
+        </button>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="customer-selection">
+      <p class="customer-selection-header">${escapeHtml(result.reply || "고객을 선택해 주세요.")}</p>
+      <div class="customer-selection-list">${rows}</div>
+    </div>
+  `;
+}
+
+async function continueChatWithSelectedCustomer(commandId, index) {
+  const pending = pendingCustomerCommands.get(commandId);
+  const customer = pending?.candidates?.[index];
+  if (!pending || !customer || isSubmitting) return;
+
+  pendingCustomerCommands.delete(commandId);
+  const data = customerToCardData(customer);
+  const source = "DB · 명령 고객 선택";
+  setSelectedCustomer(data, source, customer);
+  updateCustomerDetail(data, source, customer);
+  appendMessage("user", `고객 선택: ${customerSelectionLabel(customer)}`);
+  rememberMessage("user", `고객 선택: ${customerSelectionLabel(customer)}`);
+
+  isSubmitting = true;
+  sendButton.disabled = true;
+  try {
+    await requestChatReply(pending.message, {
+      appendUser: false,
+      context: getConversationContext(),
+    });
+  } finally {
+    isSubmitting = false;
+    sendButton.disabled = false;
+  }
+}
+
 function formatFileSize(bytes) {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
@@ -1319,7 +1393,7 @@ async function importSnsLinks(text) {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, context: getConversationContext() }),
     });
     const result = await response.json();
 
@@ -1328,6 +1402,14 @@ async function importSnsLinks(text) {
     }
 
     loadingMessage.remove();
+    if (result.customer_selection_required) {
+      updatePlanStep(planSteps, "normalize", "done", 100, "SNS 링크 확인 전에 대상 고객 후보를 먼저 확인했습니다.");
+      updatePlanStep(planSteps, "save", "skipped", 0, "고객을 선택하면 같은 명령을 이어서 처리합니다.");
+      appendMessage("ai", buildCustomerSelectionHtml(result), { html: true });
+      rememberMessage("assistant", result.reply || "고객 선택이 필요합니다.");
+      addLog("SNS Agent", "SNS 명령 대상 고객 후보를 확인하고 선택 UI를 표시했습니다.", "done");
+      return;
+    }
     const namedItems = (result.items || []).filter((item) => item.profile_name);
     updatePlanStep(planSteps, "normalize", "done", 100, `${result.count || 0}개의 SNS 링크 정보를 확인했고, ${namedItems.length}건에서 이름 후보를 찾았습니다.`);
     updatePlanStep(
@@ -1339,6 +1421,11 @@ async function importSnsLinks(text) {
     );
 
     appendMessage("ai", buildSnsInspectHtml(result.items || []), { html: true });
+    if (result.resolved_customer) {
+      const data = customerToCardData(result.resolved_customer);
+      setSelectedCustomer(data, "DB · 명령 자동 선택", result.resolved_customer);
+      updateCustomerDetail(data, "DB · 명령 자동 선택", result.resolved_customer);
+    }
     rememberMessage("assistant", `SNS 링크 정보 확인 결과: ${JSON.stringify(result.items || [])}`);
   } catch (error) {
     loadingMessage.remove();
@@ -1357,9 +1444,11 @@ function addFiles(files) {
   renderAttachmentPreview();
 }
 
-async function requestChatReply(text) {
-  appendMessage("user", text);
-  rememberMessage("user", text);
+async function requestChatReply(text, options = {}) {
+  if (options.appendUser !== false) {
+    appendMessage("user", text);
+    rememberMessage("user", text);
+  }
   questionSequence += 1;
   addLogDivider(`질문 ${questionSequence}`);
   const planSteps = createConversationPlan(text);
@@ -1376,7 +1465,7 @@ async function requestChatReply(text) {
       },
       body: JSON.stringify({
         message: text,
-        context: getConversationContext(),
+        context: options.context || getConversationContext(),
       }),
     });
     const result = await response.json();
@@ -1386,10 +1475,24 @@ async function requestChatReply(text) {
     }
 
     loadingMessage.remove();
+    if (result.customer_selection_required) {
+      updatePlanStep(planSteps, "research", "done", 100, "명령을 처리하기 전에 대상 고객 후보를 먼저 확인했습니다.");
+      updatePlanStep(planSteps, "answer", "done", 100, "사용자가 고객을 선택하면 같은 명령을 이어서 처리합니다.");
+      appendMessage("ai", buildCustomerSelectionHtml(result), { html: true });
+      rememberMessage("assistant", result.reply || "고객 선택이 필요합니다.");
+      addLog("Conversation Agent", "명령 대상 고객 후보를 확인하고 선택 UI를 표시했습니다.", "done");
+      return;
+    }
     updatePlanStep(planSteps, "research", "done", 100, "검색 결과와 기존 컨텍스트를 답변 근거로 정리했습니다.");
     updatePlanStep(planSteps, "answer", "done", 100, "최신 정보 우선 규칙을 적용해 답변을 생성했습니다.");
     const reply = result.reply || "응답을 생성하지 못했습니다.";
     appendMessage("ai", reply, { richText: true });
+    if (result.resolved_customer) {
+      const data = customerToCardData(result.resolved_customer);
+      setSelectedCustomer(data, "DB · 명령 자동 선택", result.resolved_customer);
+      updateCustomerDetail(data, "DB · 명령 자동 선택", result.resolved_customer);
+      addLog("Conversation Agent", "명령에 언급된 단일 고객을 자동 선택했습니다.", "done");
+    }
     if (result.activity_schedule) {
       if (result.activity_saved && result.calendar) {
         updatePlanStep(planSteps, "research", "done", 100, "영업활동 일정 관리 요청을 DB에 반영했습니다.");
@@ -1460,11 +1563,32 @@ dropTargets.forEach((target) => {
   });
 });
 
+function resizeCommandInput() {
+  if (!commandInput) return;
+  commandInput.style.height = "auto";
+  commandInput.style.height = `${Math.min(commandInput.scrollHeight, 132)}px`;
+}
+
+commandInput?.addEventListener("input", resizeCommandInput);
+
+commandInput?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey) return;
+  event.preventDefault();
+  chatInput?.requestSubmit();
+});
+
+chatStream?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-command-id][data-customer-index]");
+  if (!button) return;
+  const index = Number(button.dataset.customerIndex);
+  continueChatWithSelectedCustomer(button.dataset.commandId, index);
+});
+
 chatInput?.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (isSubmitting) return;
 
-  const input = chatInput.querySelector('input[type="text"]');
+  const input = commandInput || chatInput.querySelector("[data-command-input]");
   const text = input.value.trim();
   const hasFiles = pendingFiles.length > 0;
   if (!text && !hasFiles) return;
@@ -1479,11 +1603,13 @@ chatInput?.addEventListener("submit", async (event) => {
         rememberMessage("user", text);
       }
       input.value = "";
+      resizeCommandInput();
       await processPendingFiles();
       return;
     }
 
     input.value = "";
+    resizeCommandInput();
     if (extractSocialUrls(text).length > 0) {
       await importSnsLinks(text);
     } else {

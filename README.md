@@ -345,6 +345,10 @@ http://localhost:8000/
 에이전트 업무 실행:
 
 - `POST /api/chat`
+  - 요청 진입 직후, 메시지에 등록 고객의 회사명 또는 고객명이 포함되어 있는지 현재 `tenant_id`, `user_id(owner_user_id)` 범위에서 먼저 조회
+  - 후보가 1건이면 해당 고객을 `selectedCustomer`로 자동 지정한 뒤 명령을 계속 처리
+  - 후보가 여러 건이면 `customer_selection_required=true`와 후보 목록을 반환하고, 프론트에서 사용자가 고객을 선택하면 같은 명령을 이어서 재실행
+  - 이 고객 선확인 흐름은 일정, SNS fallback, 일반 LLM 답변 등 `/api/chat`으로 들어오는 모든 명령의 공통 전처리입니다.
   - 일반 질문은 기존 대화/검색 에이전트 흐름으로 처리
   - "일정 등록", "영업활동 추가", "미팅 잡아줘", "전화 일정 등록"처럼 영업활동 일정 등록 의도가 감지되면 LLM 호출 전에 서버가 `activities`에 `planned` 상태로 저장
   - "일정 취소", "날짜 변경", "다음 주 화요일로 옮겨줘", "반복 일정 등록", "일정 목록 보여줘" 같은 일정 관리 명령도 서버가 직접 처리
@@ -369,6 +373,7 @@ http://localhost:8000/
   - 공개 메타데이터와 URL 구조 기반 이름 후보, 설명, 후보 fetch URL을 반환
   - 고객 DB에는 저장하지 않음
   - 현재 프론트 SNS 입력 흐름은 이 API를 우선 사용
+  - `context`를 함께 받아 회사명/고객명 후보가 여러 건이면 `/api/chat`과 같은 고객 선택 응답을 반환
 
 채팅:
 
@@ -403,6 +408,30 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 에이전트 명령창 줄바꿈과 고객 선확인 흐름
+
+변경 파일:
+- `index.html`
+- `styles.css`
+- `script.js`
+- `main.py`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 에이전트 명령 입력창을 단일 input에서 textarea로 변경했습니다.
+- Enter는 명령 전송, Shift+Enter는 줄바꿈으로 동작하도록 키 처리를 추가했습니다.
+- `/api/chat` 시작 단계에서 메시지에 포함된 회사명 또는 고객명을 현재 로그인 사용자의 고객 DB에서 먼저 조회하도록 공통 전처리를 추가했습니다.
+- 고객 후보가 1건이면 자동으로 선택 고객 컨텍스트에 주입하고, 여러 건이면 프론트에 후보 선택 UI를 표시한 뒤 같은 명령을 이어서 처리합니다.
+- 자동 선택된 고객은 프론트의 선택 고객/상세 패널에도 반영합니다.
+- 고객 후보 조회는 로그인 세션의 `tenant_id`, `user_id(owner_user_id)` 범위와 soft delete 조건을 따르는 기존 고객 조회 함수를 재사용합니다.
+
+검증:
+- `uv run python -m py_compile main.py database.py graph.py tests\test_security_regressions.py`
+- `uv run python -m unittest discover -s tests`
+- `node --check script.js`
 
 ### 2026-05-01: DB CRUD 감사 로그와 soft delete 정책 강화
 

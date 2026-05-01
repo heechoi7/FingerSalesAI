@@ -139,6 +139,7 @@ class ChatRequest(BaseModel):
 
 class SnsLinksRequest(BaseModel):
     message: str
+    context: dict[str, Any] | None = None
 
 
 class SocialProfileScreenshotInfo(BaseModel):
@@ -1950,6 +1951,111 @@ def selected_customer_id_from_context(context: dict[str, Any] | None) -> int | N
     return None
 
 
+def normalize_customer_mention_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def score_customer_mention(message: str, row: dict[str, Any]) -> int:
+    normalized_message = normalize_customer_mention_text(message)
+    if not normalized_message:
+        return 0
+
+    score = 0
+    company = normalize_customer_mention_text(row.get("company_name"))
+    contact = normalize_customer_mention_text(row.get("contact_name"))
+    if company and len(company) >= 2 and company in normalized_message:
+        score += len(company) * 2
+    if contact and len(contact) >= 2 and contact in normalized_message:
+        score += len(contact) * 3
+    return score
+
+
+def selected_customer_context_from_row(
+    row: dict[str, Any],
+    source: str = "DB - command mention",
+) -> dict[str, Any]:
+    customer = contact_row_to_customer(row)
+    return {
+        "id": customer.get("id") or customer.get("contact_id"),
+        "contactId": customer.get("contact_id") or customer.get("id"),
+        "accountId": customer.get("account_id"),
+        "tenantId": customer.get("tenant_id"),
+        "ownerUserId": customer.get("owner_user_id"),
+        "source": source,
+        "data": customer.get("card_data") or {},
+        "customer": customer,
+        "selectedAt": app_now().isoformat(),
+    }
+
+
+def context_with_selected_customer(
+    context: dict[str, Any] | None,
+    row: dict[str, Any],
+    source: str = "DB - command mention",
+) -> dict[str, Any]:
+    next_context = dict(context or {})
+    next_context["selectedCustomer"] = selected_customer_context_from_row(row, source)
+    return next_context
+
+
+def build_customer_selection_candidates(scored_rows: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for score, row in scored_rows:
+        contact_id = int(row.get("contact_id") or 0)
+        if not contact_id or contact_id in seen:
+            continue
+        seen.add(contact_id)
+        customer = contact_row_to_customer(row)
+        customer["match_score"] = score
+        customer["match_fields"] = [
+            field
+            for field, token in (
+                ("company_name", normalize_customer_mention_text(row.get("company_name"))),
+                ("contact_name", normalize_customer_mention_text(row.get("contact_name"))),
+            )
+            if token
+        ]
+        candidates.append(customer)
+        if len(candidates) >= 8:
+            break
+    return candidates
+
+
+def resolve_command_customer_preflight(
+    cursor,
+    session: dict[str, Any],
+    message: str,
+    context: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+    rows = fetch_owned_customer_rows(cursor, session["tenant_id"], session["user_id"])
+    selected_id = selected_customer_id_from_context(context)
+    selected = next((row for row in rows if row.get("contact_id") == selected_id), None)
+    scored = [(score_customer_mention(message, row), row) for row in rows]
+    scored = [(score, row) for score, row in scored if score > 0]
+    if not scored:
+        return context, [], selected
+
+    scored.sort(
+        key=lambda item: (
+            item[0],
+            item[1].get("updated_at") or item[1].get("created_at") or "",
+            item[1].get("contact_id") or 0,
+        ),
+        reverse=True,
+    )
+    candidate_ids = {row.get("contact_id") for _, row in scored}
+    if selected and selected.get("contact_id") in candidate_ids:
+        return context, [], selected
+
+    candidates = build_customer_selection_candidates(scored)
+    if len(candidates) == 1:
+        row = scored[0][1]
+        return context_with_selected_customer(context, row), [], row
+
+    return context, candidates, None
+
+
 def fetch_owned_customer_rows(cursor, tenant_id: int, owner_user_id: int) -> list[dict[str, Any]]:
     cursor.execute(
         """
@@ -3498,10 +3604,62 @@ async def inspect_sns_links(payload: SnsLinksRequest, request: Request):
     if len(links) > MAX_SNS_LINKS_PER_REQUEST:
         raise HTTPException(status_code=400, detail=f"SNS 링크는 한 번에 최대 {MAX_SNS_LINKS_PER_REQUEST}개까지 확인할 수 있습니다.")
 
+    effective_context = payload.context if isinstance(payload.context, dict) else {}
+    resolved_customer = None
+    customer_candidates: list[dict[str, Any]] = []
+    try:
+        with db_connection() as connection:
+            cursor = connection.cursor(dictionary=True)
+            effective_context, customer_candidates, resolved_customer = resolve_command_customer_preflight(
+                cursor,
+                session,
+                payload.message,
+                effective_context,
+            )
+    except HTTPException:
+        raise
+    except Exception as error:
+        print("SNS customer command preflight failed:", error)
+        return internal_error_response("고객 정보를 먼저 확인하는 중 오류가 발생했습니다.")
+
+    if customer_candidates:
+        record_audit_event(
+            session,
+            "list",
+            "customer_command_candidates",
+            None,
+            None,
+            {"message_preview": payload.message[:300], "candidate_count": len(customer_candidates), "source": "sns"},
+            request,
+        )
+        return {
+            "success": True,
+            "reply": "SNS 링크 정보를 확인하기 전에 고객을 먼저 확인해 주세요. 아래 후보 중 이번 작업 대상 고객을 선택하면 같은 명령을 이어서 처리하겠습니다.",
+            "customer_selection_required": True,
+            "pending_message": payload.message,
+            "candidates": admin_json_rows(customer_candidates),
+        }
+
     try:
         items = [inspect_social_link(link) for link in links]
-        record_audit_event(session, "inspect", "sns", None, None, {"link_count": len(items)}, request)
-        return {"success": True, "count": len(items), "items": items}
+        record_audit_event(
+            session,
+            "inspect",
+            "sns",
+            selected_customer_id_from_context(effective_context),
+            None,
+            {
+                "link_count": len(items),
+                "resolved_customer_id": resolved_customer.get("contact_id") if resolved_customer else None,
+            },
+            request,
+        )
+        return {
+            "success": True,
+            "count": len(items),
+            "items": items,
+            "resolved_customer": admin_json_row(contact_row_to_customer(resolved_customer)) if resolved_customer else None,
+        }
     except HTTPException:
         raise
     except Exception as error:
@@ -3962,7 +4120,25 @@ async def chat(chat_request: ChatRequest, request: Request):
     if not message:
         raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
 
-    selected_customer = (chat_request.context or {}).get("selectedCustomer") if isinstance(chat_request.context, dict) else None
+    effective_context = chat_request.context if isinstance(chat_request.context, dict) else {}
+    resolved_customer = None
+    customer_candidates: list[dict[str, Any]] = []
+    try:
+        with db_connection() as connection:
+            cursor = connection.cursor(dictionary=True)
+            effective_context, customer_candidates, resolved_customer = resolve_command_customer_preflight(
+                cursor,
+                session,
+                message,
+                effective_context,
+            )
+    except HTTPException:
+        raise
+    except Exception as error:
+        print("Customer command preflight failed:", error)
+        return internal_error_response("고객 정보를 먼저 확인하는 중 오류가 발생했습니다.")
+
+    selected_customer = effective_context.get("selectedCustomer") if isinstance(effective_context, dict) else None
     selected_customer_id = (
         selected_customer.get("id") or selected_customer.get("contactId")
         if isinstance(selected_customer, dict)
@@ -3978,6 +4154,24 @@ async def chat(chat_request: ChatRequest, request: Request):
         request,
     )
 
+    if customer_candidates:
+        record_audit_event(
+            session,
+            "list",
+            "customer_command_candidates",
+            None,
+            None,
+            {"message_preview": message[:300], "candidate_count": len(customer_candidates)},
+            request,
+        )
+        return {
+            "success": True,
+            "reply": "명령을 처리하기 전에 고객을 먼저 확인해 주세요. 아래 후보 중 이번 작업 대상 고객을 선택하면 같은 명령을 이어서 처리하겠습니다.",
+            "customer_selection_required": True,
+            "pending_message": message,
+            "candidates": admin_json_rows(customer_candidates),
+        }
+
     social_links = extract_social_links(message)
     if social_links:
         if len(social_links) > MAX_SNS_LINKS_PER_REQUEST:
@@ -3990,7 +4184,11 @@ async def chat(chat_request: ChatRequest, request: Request):
                 "sns",
                 selected_customer_id,
                 None,
-                {"link_count": len(items), "source": "chat"},
+                {
+                    "link_count": len(items),
+                    "source": "chat",
+                    "resolved_customer_id": resolved_customer.get("contact_id") if resolved_customer else None,
+                },
                 request,
             )
             return {
@@ -3999,6 +4197,7 @@ async def chat(chat_request: ChatRequest, request: Request):
                 "sns_inspected": True,
                 "count": len(items),
                 "items": items,
+                "resolved_customer": admin_json_row(contact_row_to_customer(resolved_customer)) if resolved_customer else None,
             }
         except HTTPException:
             raise
@@ -4008,7 +4207,7 @@ async def chat(chat_request: ChatRequest, request: Request):
 
     if is_sales_activity_schedule_request(message):
         try:
-            activity_result = manage_sales_activity_from_message(session, message, chat_request.context, request)
+            activity_result = manage_sales_activity_from_message(session, message, effective_context, request)
             return {
                 "success": True,
                 "reply": activity_result["reply"],
@@ -4028,7 +4227,7 @@ async def chat(chat_request: ChatRequest, request: Request):
 
     try:
         model = create_gemini_model(temperature=0.3)
-        context_text = build_chat_context(chat_request.context)
+        context_text = build_chat_context(effective_context)
         tool = TavilySearchResults(max_results=6)
         agent = create_react_agent(
             model,
@@ -4068,7 +4267,11 @@ async def chat(chat_request: ChatRequest, request: Request):
             }
         )
         reply = content_to_text(response["messages"][-1].content).strip()
-        return {"success": True, "reply": reply}
+        return {
+            "success": True,
+            "reply": reply,
+            "resolved_customer": admin_json_row(contact_row_to_customer(resolved_customer)) if resolved_customer else None,
+        }
     except HTTPException:
         raise
     except Exception as error:

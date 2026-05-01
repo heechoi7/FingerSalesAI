@@ -17,6 +17,17 @@ class FakeCursor:
         return self.row
 
 
+class FakeListCursor:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def execute(self, *_args, **_kwargs):
+        return None
+
+    def fetchall(self):
+        return self.rows
+
+
 class FakeConnection:
     def __init__(self, row):
         self.row = row
@@ -227,6 +238,61 @@ class SecurityRegressionTests(unittest.TestCase):
         candidates = main.parse_sales_activity_due_at_candidates("일정을 다음 주 화요일 오후 3시로 변경", now)
 
         self.assertEqual(candidates, [main.datetime(2026, 5, 5, 15, 0)])
+
+    def test_customer_mention_scores_company_or_contact(self):
+        row = {"company_name": "Acme Korea", "contact_name": "Chris Park"}
+
+        self.assertGreater(main.score_customer_mention("Acme Korea meeting", row), 0)
+        self.assertGreater(main.score_customer_mention("Chris Park call", row), 0)
+        self.assertEqual(main.score_customer_mention("other customer", row), 0)
+
+    def test_command_context_injects_single_customer_candidate(self):
+        row = {
+            "contact_id": 42,
+            "tenant_id": 7,
+            "account_id": 9,
+            "owner_user_id": 11,
+            "company_name": "Acme Korea",
+            "contact_name": "Chris Park",
+        }
+
+        context = main.context_with_selected_customer({}, row)
+
+        self.assertEqual(context["selectedCustomer"]["contactId"], 42)
+        self.assertEqual(context["selectedCustomer"]["accountId"], 9)
+
+    def test_customer_preflight_returns_selection_for_multiple_matches(self):
+        rows = [
+            {"contact_id": 1, "tenant_id": 7, "owner_user_id": 11, "account_id": 10, "company_name": "Acme Korea", "contact_name": "Chris Park"},
+            {"contact_id": 2, "tenant_id": 7, "owner_user_id": 11, "account_id": 10, "company_name": "Acme Korea", "contact_name": "Dana Lee"},
+        ]
+
+        context, candidates, resolved = main.resolve_command_customer_preflight(
+            FakeListCursor(rows),
+            {"tenant_id": 7, "user_id": 11},
+            "Acme Korea 일정 잡아줘",
+            {},
+        )
+
+        self.assertEqual(context, {})
+        self.assertIsNone(resolved)
+        self.assertEqual({candidate["contact_id"] for candidate in candidates}, {1, 2})
+
+    def test_customer_preflight_auto_selects_single_match(self):
+        rows = [
+            {"contact_id": 1, "tenant_id": 7, "owner_user_id": 11, "account_id": 10, "company_name": "Acme Korea", "contact_name": "Chris Park"},
+        ]
+
+        context, candidates, resolved = main.resolve_command_customer_preflight(
+            FakeListCursor(rows),
+            {"tenant_id": 7, "user_id": 11},
+            "Chris Park 일정 잡아줘",
+            {},
+        )
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(resolved["contact_id"], 1)
+        self.assertEqual(context["selectedCustomer"]["contactId"], 1)
 
 
 if __name__ == "__main__":
