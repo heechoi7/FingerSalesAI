@@ -59,6 +59,7 @@ ADMIN_ROLES = {"owner", "admin"}
 USER_STATUS_VALUES = {"active", "invited", "locked", "disabled"}
 TENANT_STATUS_VALUES = {"active", "trial", "suspended", "closed"}
 PIPELINE_STAGE_CODES = {"lead", "prospect", "opportunity", "proposal", "contract", "success"}
+CUSTOM_CODES_SETTING_KEY = "custom_codes"
 ADMIN_ENTITY_SELECTS = {
     "users": "id, tenant_id, team_id, email, name, phone, role, status, last_login_at, created_at, updated_at, deleted_at",
     "teams": "id, tenant_id, parent_team_id, name, description, sort_order, created_at, updated_at, deleted_at",
@@ -203,6 +204,27 @@ class AdminPipelineStagePayload(BaseModel):
     probability_percent: float = 0
     sort_order: int = 0
     is_active: bool = True
+
+
+class AdminCodeItemPayload(BaseModel):
+    code: str = ""
+    name: str = ""
+    description: str = ""
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class AdminCodeGroupPayload(BaseModel):
+    group_code: str = ""
+    name: str = ""
+    description: str = ""
+    sort_order: int = 0
+    is_active: bool = True
+    items: list[AdminCodeItemPayload] = Field(default_factory=list)
+
+
+class AdminCodesPayload(BaseModel):
+    groups: list[AdminCodeGroupPayload] = Field(default_factory=list)
 
 
 @app.on_event("startup")
@@ -408,6 +430,90 @@ def write_audit_log(
             json.dumps(admin_json_row(after or {}), ensure_ascii=False),
         ),
     )
+
+
+def parse_custom_codes_setting(value: Any) -> dict[str, Any]:
+    if value in (None, ""):
+        return {"groups": []}
+    if isinstance(value, dict):
+        source = value
+    else:
+        try:
+            source = json.loads(value)
+        except Exception:
+            source = {}
+    groups = source.get("groups") if isinstance(source, dict) else []
+    return {"groups": groups if isinstance(groups, list) else []}
+
+
+def normalize_code_token(value: str, label: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_-]+", "_", (value or "").strip()).strip("_").lower()
+    if not token:
+        raise HTTPException(status_code=400, detail=f"{label} 코드를 입력해 주세요.")
+    if len(token) > 80:
+        raise HTTPException(status_code=400, detail=f"{label} 코드는 80자 이하로 입력해 주세요.")
+    return token
+
+
+def normalized_custom_codes(payload: AdminCodesPayload) -> dict[str, Any]:
+    groups: list[dict[str, Any]] = []
+    seen_groups: set[str] = set()
+    for group in payload.groups:
+        group_code = normalize_code_token(group.group_code, "그룹")
+        if group_code in seen_groups:
+            raise HTTPException(status_code=400, detail=f"중복된 코드 그룹입니다: {group_code}")
+        seen_groups.add(group_code)
+        if not group.name.strip():
+            raise HTTPException(status_code=400, detail="코드 그룹 이름을 입력해 주세요.")
+
+        items: list[dict[str, Any]] = []
+        seen_items: set[str] = set()
+        for item in group.items:
+            item_code = normalize_code_token(item.code, "항목")
+            if item_code in seen_items:
+                raise HTTPException(status_code=400, detail=f"{group_code} 그룹에 중복된 코드 항목이 있습니다: {item_code}")
+            seen_items.add(item_code)
+            if not item.name.strip():
+                raise HTTPException(status_code=400, detail="코드 항목 이름을 입력해 주세요.")
+            items.append(
+                {
+                    "code": item_code,
+                    "name": item.name.strip(),
+                    "description": item.description.strip(),
+                    "sort_order": item.sort_order,
+                    "is_active": bool(item.is_active),
+                }
+            )
+
+        groups.append(
+            {
+                "group_code": group_code,
+                "name": group.name.strip(),
+                "description": group.description.strip(),
+                "sort_order": group.sort_order,
+                "is_active": bool(group.is_active),
+                "items": sorted(items, key=lambda row: (row["sort_order"], row["code"])),
+            }
+        )
+
+    return {"groups": sorted(groups, key=lambda row: (row["sort_order"], row["group_code"]))}
+
+
+def fetch_custom_codes(cursor, tenant_id: int) -> tuple[int | None, dict[str, Any]]:
+    cursor.execute(
+        """
+        SELECT id, setting_value
+        FROM tenant_settings
+        WHERE tenant_id = %s
+          AND setting_key = %s
+        LIMIT 1
+        """,
+        (tenant_id, CUSTOM_CODES_SETTING_KEY),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None, {"groups": []}
+    return row["id"], parse_custom_codes_setting(row.get("setting_value"))
 
 
 def internal_error_response(message: str = "요청 처리 중 오류가 발생했습니다.", status_code: int = 500) -> JSONResponse:
@@ -1649,6 +1755,9 @@ async def admin_summary(request: Request):
             deleted_filter = "" if table == "audit_logs" else "AND deleted_at IS NULL"
             cursor.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE tenant_id = %s {deleted_filter}", (tenant_id,))
             counts[key] = cursor.fetchone()["count"]
+        _setting_id, codes = fetch_custom_codes(cursor, tenant_id)
+        counts["code_groups"] = len(codes["groups"])
+        counts["code_items"] = sum(len(group.get("items") or []) for group in codes["groups"])
     return {
         "success": True,
         "tenant": admin_json_row(tenant or {}),
@@ -1949,6 +2058,48 @@ async def admin_roles(request: Request):
         for key in USER_ROLES
     ]
     return {"success": True, "roles": roles}
+
+
+@app.get("/api/admin/codes")
+async def admin_codes(request: Request):
+    session = require_admin_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        _setting_id, codes = fetch_custom_codes(cursor, session["tenant_id"])
+    return {"success": True, "codes": codes}
+
+
+@app.put("/api/admin/codes")
+async def admin_update_codes(payload: AdminCodesPayload, request: Request):
+    session = require_admin_session(request)
+    codes = normalized_custom_codes(payload)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        setting_id, before = fetch_custom_codes(cursor, session["tenant_id"])
+        setting_value = json.dumps(codes, ensure_ascii=False)
+        if setting_id:
+            cursor.execute(
+                """
+                UPDATE tenant_settings
+                SET setting_value = %s,
+                    description = %s
+                WHERE id = %s
+                  AND tenant_id = %s
+                """,
+                (setting_value, "관리자 코드관리 사용자 정의 코드", setting_id, session["tenant_id"]),
+            )
+            entity_id = setting_id
+        else:
+            cursor.execute(
+                """
+                INSERT INTO tenant_settings (tenant_id, setting_key, setting_value, description)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (session["tenant_id"], CUSTOM_CODES_SETTING_KEY, setting_value, "관리자 코드관리 사용자 정의 코드"),
+            )
+            entity_id = cursor.lastrowid
+        write_audit_log(cursor, session, "update", "custom_codes", entity_id, before, codes, request)
+    return {"success": True, "codes": codes}
 
 
 @app.get("/api/admin/pipeline-stages")

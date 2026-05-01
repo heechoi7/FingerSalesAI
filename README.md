@@ -266,6 +266,10 @@ http://localhost:8000/
 - `GET /api/admin/roles`
   - 현재 `users.role` enum과 서버 역할 정의 기준의 권한 설명 반환
 
+- `GET /api/admin/codes`, `PUT /api/admin/codes`
+  - `tenant_settings.setting_key = custom_codes`에 저장되는 테넌트별 사용자 정의 코드 그룹/항목 조회 및 저장
+  - 별도 코드 테이블이 생기기 전까지 JSON 설정값으로 관리
+
 - `GET /api/admin/pipeline-stages`, `POST /api/admin/pipeline-stages`, `PUT /api/admin/pipeline-stages/{stage_id}`, `DELETE /api/admin/pipeline-stages/{stage_id}`
   - `pipeline_stages` 기반 영업 단계 조회/추가/수정/soft delete
 
@@ -344,6 +348,35 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 관리자 코드 관리 메뉴 추가
+
+변경 파일:
+- `main.py`
+- `admin.html`
+- `admin.js`
+- `styles.css`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 관리자 사이드 메뉴에 `코드 관리`를 추가했습니다.
+- 전용 코드 테이블이 아직 없으므로 기존 `tenant_settings`의 JSON 설정값을 사용해 `custom_codes`를 저장하도록 구현했습니다.
+- `GET /api/admin/codes`, `PUT /api/admin/codes` API를 추가했습니다.
+- 코드 그룹은 `group_code`, `name`, `description`, `sort_order`, `is_active`, `items` 구조로 관리합니다.
+- 코드 항목은 `code`, `name`, `description`, `sort_order`, `is_active` 구조로 관리합니다.
+- 코드/그룹 코드는 영문/숫자/언더스코어/하이픈 기반 토큰으로 정규화하고 중복을 서버에서 차단합니다.
+- 코드 변경 작업은 `audit_logs`에 `custom_codes` 대상으로 기록합니다.
+- 관리자 요약 카드에 코드 항목 수를 표시하도록 변경했습니다.
+
+검증:
+- `node --check admin.js` 통과
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py tests/test_security_regressions.py` 통과
+- `uv run python -m unittest discover -s tests` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- FastAPI TestClient로 `finger / james@crm.co.kr` 로그인 후 `/admin`, `/api/admin/summary`, `/api/admin/codes` 응답 확인
 
 ### 2026-05-01: 관리자 페이지 및 관리 API 추가
 

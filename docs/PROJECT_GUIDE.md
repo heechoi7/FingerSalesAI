@@ -396,6 +396,7 @@ FSAI_EXTRA_ENV_PATH=
 - 사용자 관리
 - 팀 관리
 - 권한 관리
+- 코드 관리
 - 영업 단계 설정
 - 사용로그
 
@@ -573,6 +574,16 @@ FSAI_EXTRA_ENV_PATH=
   - `GET /api/admin/roles`
   - 별도 권한 테이블이 아직 없으므로 `users.role` enum과 서버의 `USER_ROLES` 정의를 기준으로 표시
   - 추후 RBAC 테이블이 추가되면 이 API의 내부 조회 로직을 교체
+
+- 코드 관리
+  - `GET /api/admin/codes`
+  - `PUT /api/admin/codes`
+  - 별도 코드 테이블이 아직 없으므로 `tenant_settings.setting_key = custom_codes` JSON 설정값을 사용
+  - 코드 그룹 구조: `group_code`, `name`, `description`, `sort_order`, `is_active`, `items`
+  - 코드 항목 구조: `code`, `name`, `description`, `sort_order`, `is_active`
+  - 그룹/항목 코드는 영문/숫자/언더스코어/하이픈 기반 토큰으로 정규화
+  - 같은 테넌트 안에서 그룹 코드와 그룹별 항목 코드 중복을 서버에서 차단
+  - 추후 전용 공통 코드 테이블이 추가되면 API 응답 구조는 유지하고 저장소만 교체
 
 - 영업 단계 설정
   - `GET /api/admin/pipeline-stages`

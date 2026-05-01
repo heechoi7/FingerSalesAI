@@ -19,6 +19,7 @@ const adminState = {
   statuses: ["active", "invited", "locked", "disabled"],
   teams: [],
   stageCodes: ["lead", "prospect", "opportunity", "proposal", "contract", "success"],
+  codeGroups: [],
 };
 
 const menuMeta = {
@@ -26,6 +27,7 @@ const menuMeta = {
   users: ["사용자 관리", "테넌트 사용자, 역할, 상태, 소속 팀을 관리합니다."],
   teams: ["팀 관리", "팀 구조와 정렬 순서를 관리합니다."],
   roles: ["권한 관리", "현재 역할 정의와 역할별 사용자 수를 확인합니다."],
+  codes: ["코드 관리", "테넌트별 사용자 정의 코드 그룹과 코드 항목을 관리합니다."],
   stages: ["영업 단계 설정", "파이프라인 단계, 성공 확률, 활성 여부를 관리합니다."],
   logs: ["사용로그", "관리자 변경 이력과 감사 로그를 확인합니다."],
 };
@@ -109,6 +111,7 @@ function renderSummary(summary) {
     ["테넌트", tenant.name || tenant.tenant_code || "-"],
     ["사용자", counts.users ?? 0],
     ["팀", counts.teams ?? 0],
+    ["코드", counts.code_items ?? 0],
     ["영업 단계", counts.pipeline_stages ?? 0],
     ["감사 로그", counts.audit_logs ?? 0],
   ]
@@ -356,6 +359,202 @@ async function renderRoles() {
   `;
 }
 
+function codeGroupPayloadFrom(form) {
+  return {
+    group_code: form.querySelector('[name="group_code"]').value,
+    name: form.querySelector('[name="name"]').value,
+    description: form.querySelector('[name="description"]').value,
+    sort_order: Number(form.querySelector('[name="sort_order"]').value || 0),
+    is_active: form.querySelector('[name="is_active"]').checked,
+    items: [],
+  };
+}
+
+function codeItemPayloadFrom(form) {
+  return {
+    code: form.querySelector('[name="code"]').value,
+    name: form.querySelector('[name="name"]').value,
+    description: form.querySelector('[name="description"]').value,
+    sort_order: Number(form.querySelector('[name="sort_order"]').value || 0),
+    is_active: form.querySelector('[name="is_active"]').checked,
+  };
+}
+
+async function saveCodeGroups(message = "코드 정보를 저장했습니다.") {
+  const response = await adminApi("/api/admin/codes", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ groups: adminState.codeGroups }),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(result.detail || result.error || "코드 정보를 저장하지 못했습니다.");
+  adminState.codeGroups = result.codes?.groups || [];
+  showAdminMessage(message, "success");
+  await loadSummary();
+  await renderCodes(false);
+}
+
+function renderCodeGroupForm() {
+  return `
+    <form class="admin-inline-form code-group-form" id="code-group-form">
+      <input name="group_code" placeholder="그룹 코드" required />
+      <input name="name" placeholder="그룹 이름" required />
+      <input name="description" placeholder="그룹 설명" />
+      <input name="sort_order" type="number" value="0" aria-label="정렬 순서" />
+      <label class="admin-checkbox"><input name="is_active" type="checkbox" checked /> 활성</label>
+      <button type="submit">그룹 추가</button>
+    </form>
+  `;
+}
+
+function renderCodeItemForm(groupCode) {
+  return `
+    <form class="admin-inline-form code-item-form" data-code-item-form="${escapeHtml(groupCode)}">
+      <input name="code" placeholder="코드" required />
+      <input name="name" placeholder="코드명" required />
+      <input name="description" placeholder="설명" />
+      <input name="sort_order" type="number" value="0" aria-label="정렬 순서" />
+      <label class="admin-checkbox"><input name="is_active" type="checkbox" checked /> 활성</label>
+      <button type="submit">항목 추가</button>
+    </form>
+  `;
+}
+
+function renderCodeGroup(group) {
+  const rows = (group.items || [])
+    .map(
+      (item) => `
+        <tr data-code-group="${escapeHtml(group.group_code)}" data-code-item="${escapeHtml(item.code)}">
+          <td><input name="code" value="${escapeHtml(item.code)}" /></td>
+          <td><input name="name" value="${escapeHtml(item.name)}" /></td>
+          <td><input name="description" value="${escapeHtml(item.description)}" /></td>
+          <td><input name="sort_order" type="number" value="${escapeHtml(item.sort_order || 0)}" /></td>
+          <td><input name="is_active" type="checkbox" ${item.is_active ? "checked" : ""} /></td>
+          <td>
+            <button type="button" data-action="save-code-item">저장</button>
+            <button type="button" data-action="delete-code-item">삭제</button>
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+  return `
+    <section class="admin-code-group" data-code-group-card="${escapeHtml(group.group_code)}">
+      <div class="admin-code-group-header">
+        <form class="admin-inline-form code-group-edit-form" data-code-group-form="${escapeHtml(group.group_code)}">
+          <input name="group_code" value="${escapeHtml(group.group_code)}" />
+          <input name="name" value="${escapeHtml(group.name)}" />
+          <input name="description" value="${escapeHtml(group.description)}" />
+          <input name="sort_order" type="number" value="${escapeHtml(group.sort_order || 0)}" aria-label="정렬 순서" />
+          <label class="admin-checkbox"><input name="is_active" type="checkbox" ${group.is_active ? "checked" : ""} /> 활성</label>
+          <button type="submit">그룹 저장</button>
+        </form>
+        <button type="button" class="admin-danger-button" data-action="delete-code-group" data-code-group="${escapeHtml(group.group_code)}">그룹 삭제</button>
+      </div>
+      ${renderCodeItemForm(group.group_code)}
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>코드</th><th>코드명</th><th>설명</th><th>정렬</th><th>활성</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="6">등록된 코드 항목이 없습니다.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+async function renderCodes(fetchLatest = true) {
+  setLoading();
+  if (fetchLatest) {
+    const response = await adminApi("/api/admin/codes");
+    const result = await response.json();
+    if (!response.ok || !result.success) throw new Error(result.detail || result.error || "코드 정보를 불러오지 못했습니다.");
+    adminState.codeGroups = result.codes?.groups || [];
+  }
+  adminView.innerHTML = `
+    ${renderCodeGroupForm()}
+    <div class="admin-code-groups">
+      ${
+        adminState.codeGroups.length
+          ? adminState.codeGroups.map(renderCodeGroup).join("")
+          : `<div class="admin-empty">등록된 사용자 정의 코드 그룹이 없습니다.</div>`
+      }
+    </div>
+  `;
+  document.querySelector("#code-group-form")?.addEventListener("submit", handleAdminSubmit(createCodeGroup));
+  document.querySelectorAll("[data-code-group-form]").forEach((form) => {
+    form.addEventListener("submit", handleAdminSubmit(saveCodeGroup));
+  });
+  document.querySelectorAll("[data-code-item-form]").forEach((form) => {
+    form.addEventListener("submit", handleAdminSubmit(createCodeItem));
+  });
+}
+
+async function createCodeGroup(event) {
+  event.preventDefault();
+  const group = codeGroupPayloadFrom(event.currentTarget);
+  if (adminState.codeGroups.some((item) => item.group_code === group.group_code)) {
+    throw new Error("이미 같은 그룹 코드가 있습니다.");
+  }
+  adminState.codeGroups.push(group);
+  await saveCodeGroups("코드 그룹을 추가했습니다.");
+}
+
+async function saveCodeGroup(event) {
+  event.preventDefault();
+  const oldGroupCode = event.currentTarget.dataset.codeGroupForm;
+  const group = adminState.codeGroups.find((item) => item.group_code === oldGroupCode);
+  if (!group) throw new Error("코드 그룹을 찾지 못했습니다.");
+  const next = codeGroupPayloadFrom(event.currentTarget);
+  if (next.group_code !== oldGroupCode && adminState.codeGroups.some((item) => item.group_code === next.group_code)) {
+    throw new Error("이미 같은 그룹 코드가 있습니다.");
+  }
+  Object.assign(group, next, { items: group.items || [] });
+  await saveCodeGroups("코드 그룹을 저장했습니다.");
+}
+
+async function deleteCodeGroup(groupCode) {
+  if (!confirm("코드 그룹과 하위 항목을 삭제할까요?")) return;
+  adminState.codeGroups = adminState.codeGroups.filter((group) => group.group_code !== groupCode);
+  await saveCodeGroups("코드 그룹을 삭제했습니다.");
+}
+
+async function createCodeItem(event) {
+  event.preventDefault();
+  const groupCode = event.currentTarget.dataset.codeItemForm;
+  const group = adminState.codeGroups.find((item) => item.group_code === groupCode);
+  if (!group) throw new Error("코드 그룹을 찾지 못했습니다.");
+  const item = codeItemPayloadFrom(event.currentTarget);
+  group.items = group.items || [];
+  if (group.items.some((row) => row.code === item.code)) {
+    throw new Error("이미 같은 코드 항목이 있습니다.");
+  }
+  group.items.push(item);
+  await saveCodeGroups("코드 항목을 추가했습니다.");
+}
+
+async function saveCodeItem(row) {
+  const groupCode = row.dataset.codeGroup;
+  const itemCode = row.dataset.codeItem;
+  const group = adminState.codeGroups.find((item) => item.group_code === groupCode);
+  if (!group) throw new Error("코드 그룹을 찾지 못했습니다.");
+  const item = group.items.find((rowItem) => rowItem.code === itemCode);
+  if (!item) throw new Error("코드 항목을 찾지 못했습니다.");
+  const next = codeItemPayloadFrom(row);
+  if (next.code !== itemCode && group.items.some((rowItem) => rowItem.code === next.code)) {
+    throw new Error("이미 같은 코드 항목이 있습니다.");
+  }
+  Object.assign(item, next);
+  await saveCodeGroups("코드 항목을 저장했습니다.");
+}
+
+async function deleteCodeItem(row) {
+  if (!confirm("코드 항목을 삭제할까요?")) return;
+  const group = adminState.codeGroups.find((item) => item.group_code === row.dataset.codeGroup);
+  if (!group) throw new Error("코드 그룹을 찾지 못했습니다.");
+  group.items = (group.items || []).filter((item) => item.code !== row.dataset.codeItem);
+  await saveCodeGroups("코드 항목을 삭제했습니다.");
+}
+
 function stageOptions(selected) {
   return optionHtml(adminState.stageCodes, selected, "단계 코드");
 }
@@ -500,6 +699,7 @@ async function renderCurrentMenu() {
     if (adminState.menu === "users") await renderUsers();
     if (adminState.menu === "teams") await renderTeams();
     if (adminState.menu === "roles") await renderRoles();
+    if (adminState.menu === "codes") await renderCodes();
     if (adminState.menu === "stages") await renderStages();
     if (adminState.menu === "logs") await renderLogs();
   } catch (error) {
@@ -530,6 +730,9 @@ adminView.addEventListener("click", async (event) => {
     if (action === "save-user") await saveUser(row);
     if (action === "save-team") await saveTeam(row);
     if (action === "delete-team") await deleteTeam(row);
+    if (action === "delete-code-group") await deleteCodeGroup(event.target.dataset.codeGroup);
+    if (action === "save-code-item") await saveCodeItem(row);
+    if (action === "delete-code-item") await deleteCodeItem(row);
     if (action === "save-stage") await saveStage(row);
     if (action === "delete-stage") await deleteStage(row);
   } catch (error) {

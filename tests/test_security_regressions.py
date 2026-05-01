@@ -127,6 +127,35 @@ class SecurityRegressionTests(unittest.TestCase):
     def test_admin_user_audit_select_excludes_password_hash(self):
         self.assertNotIn("password_hash", main.ADMIN_ENTITY_SELECTS["users"])
 
+    def test_custom_code_tokens_are_normalized(self):
+        payload = main.AdminCodesPayload(
+            groups=[
+                {
+                    "group_code": "Industry Type",
+                    "name": "산업군",
+                    "items": [{"code": "IT Service", "name": "IT 서비스"}],
+                }
+            ]
+        )
+
+        codes = main.normalized_custom_codes(payload)
+
+        self.assertEqual(codes["groups"][0]["group_code"], "industry_type")
+        self.assertEqual(codes["groups"][0]["items"][0]["code"], "it_service")
+
+    def test_custom_code_duplicate_group_is_rejected(self):
+        payload = main.AdminCodesPayload(
+            groups=[
+                {"group_code": "source", "name": "유입경로"},
+                {"group_code": "source", "name": "중복"},
+            ]
+        )
+
+        with self.assertRaises(main.HTTPException) as raised:
+            main.normalized_custom_codes(payload)
+
+        self.assertEqual(raised.exception.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

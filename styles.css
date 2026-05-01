@@ -1388,7 +1388,8 @@ progress::-webkit-progress-value {
 .admin-refresh-button,
 .admin-form button,
 .admin-inline-form button,
-.admin-table button {
+.admin-table button,
+.admin-danger-button {
   border: 1px solid var(--line-strong);
   background: #fff;
   color: var(--charcoal);
@@ -1406,7 +1407,8 @@ progress::-webkit-progress-value {
 .admin-refresh-button:hover,
 .admin-form button:hover,
 .admin-inline-form button:hover,
-.admin-table button:hover {
+.admin-table button:hover,
+.admin-danger-button:hover {
   border-color: rgba(215, 53, 53, 0.45);
   color: var(--brand-dark);
 }
@@ -1476,7 +1478,7 @@ progress::-webkit-progress-value {
 
 .admin-summary-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(110px, 1fr));
   gap: 8px;
   margin-bottom: 14px;
 }
@@ -1607,6 +1609,46 @@ progress::-webkit-progress-value {
   margin-left: 4px;
 }
 
+.admin-code-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-code-group {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  background: #fff;
+}
+
+.admin-code-group-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.code-group-form,
+.code-group-edit-form,
+.code-item-form {
+  grid-template-columns: 1fr 1fr 1.4fr 88px auto auto;
+}
+
+.admin-danger-button {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.admin-empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: 6px;
+  padding: 24px;
+  color: var(--muted);
+  font-weight: 800;
+  text-align: center;
+}
+
 .admin-role-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1688,7 +1730,11 @@ progress::-webkit-progress-value {
     grid-template-columns: 1fr;
   }
 
-  .admin-inline-form {
+  .admin-inline-form,
+  .code-group-form,
+  .code-group-edit-form,
+  .code-item-form,
+  .admin-code-group-header {
     grid-template-columns: 1fr;
   }
 }
