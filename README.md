@@ -423,6 +423,24 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 문서 뷰어 깨진 텍스트 표시 방지
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `README.md`
+
+변경 내용:
+- 기존 `.doc`/`.xls` 파일을 `latin-1`로 강제 디코딩해 바이너리 문자열이 저장되던 로직을 제거했습니다.
+- 레거시 Office 문서는 UTF-16LE, CP949, UTF-8 후보 중 읽을 수 있는 텍스트만 추출하도록 보완했습니다.
+- 이미 DB에 저장된 깨진 추출 텍스트도 프론트에서 표시하지 않도록 가독성 검사를 추가했습니다.
+- 내부 뷰어가 지원하지 않는 문서는 깨진 문자열 대신 안내 메시지와 다운로드 링크만 보여주도록 수정했습니다.
+
+검증:
+- `node --check script.js`
+- `.venv\Scripts\python.exe -m py_compile main.py`
+- `.venv\Scripts\python.exe -m unittest discover -s tests`
+
 ### 2026-05-01: 견적/계약 상세 탭 레이아웃 깨짐 수정
 
 변경 파일:

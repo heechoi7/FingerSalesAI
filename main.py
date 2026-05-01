@@ -973,6 +973,48 @@ def extract_pdf_text(contents: bytes) -> str:
     return re.sub(r"\s+", " ", visible)[:12000]
 
 
+def is_readable_document_text(text: str) -> bool:
+    value = (text or "").strip()
+    if len(value) < 12:
+        return False
+    sample = value[:4000]
+    control_count = sum(1 for char in sample if ord(char) < 32 and char not in "\n\r\t")
+    suspicious_count = sum(1 for char in sample if char in "ÿþÐÏÑÒÓÔÕÖ×ØÙÚÛÜÝÞßÃÂ�")
+    readable_count = sum(
+        1
+        for char in sample
+        if char.isspace()
+        or char.isalnum()
+        or "\uac00" <= char <= "\ud7a3"
+        or char in ".,:;/%()-+_@#&[]{}'\"!?"
+    )
+    length = len(sample) or 1
+    return control_count / length < 0.01 and suspicious_count / length < 0.08 and readable_count / length > 0.62
+
+
+def extract_legacy_office_text(contents: bytes) -> str:
+    candidates: list[str] = []
+    for encoding in ("utf-16le", "cp949", "utf-8"):
+        try:
+            decoded = contents.decode(encoding, errors="ignore")
+        except Exception:
+            continue
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]+", " ", decoded.replace("\x00", " "))
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if is_readable_document_text(cleaned):
+            candidates.append(cleaned)
+
+    ascii_chunks = [chunk.decode("ascii", errors="ignore") for chunk in re.findall(rb"[\x20-\x7e]{4,}", contents)]
+    ascii_text = re.sub(r"\s+", " ", " ".join(ascii_chunks)).strip()
+    if is_readable_document_text(ascii_text):
+        candidates.append(ascii_text)
+
+    if not candidates:
+        return ""
+    candidates.sort(key=len, reverse=True)
+    return candidates[0][:MAX_DOCUMENT_TEXT_CHARS]
+
+
 def extract_document_text(contents: bytes, filename: str, content_type: str | None) -> str:
     extension = upload_extension(filename)
     if extension == ".docx":
@@ -982,7 +1024,7 @@ def extract_document_text(contents: bytes, filename: str, content_type: str | No
     if extension == ".pdf":
         return extract_pdf_text(contents)
     if extension in {".doc", ".xls"}:
-        return re.sub(r"\s+", " ", contents.decode("latin-1", errors="ignore"))
+        return extract_legacy_office_text(contents)
     if extension in {".txt", ".csv"} or (content_type or "").startswith("text/"):
         for encoding in ("utf-8-sig", "utf-8", "cp949", "latin-1"):
             try:

@@ -415,6 +415,18 @@ function documentLinkValue(row) {
   };
 }
 
+function isReadableDocumentText(text) {
+  const value = String(text || "").trim();
+  if (value.length < 12) return false;
+  const sample = value.slice(0, 4000);
+  const controlCount = [...sample].filter((char) => char.charCodeAt(0) < 32 && !"\n\r\t".includes(char)).length;
+  const suspiciousCount = [...sample].filter((char) => "ÿþÐÏÑÒÓÔÕÖ×ØÙÚÛÜÝÞßÃÂ�".includes(char)).length;
+  const longRepeatedBinary = /([^\s가-힣A-Za-z0-9])\1{12,}/.test(sample);
+  const readableCount = [...sample].filter((char) => /[\s가-힣A-Za-z0-9.,:;/%()\-+_@#&[\]{}'"!?]/.test(char)).length;
+  const length = sample.length || 1;
+  return controlCount / length < 0.01 && suspiciousCount / length < 0.08 && readableCount / length > 0.62 && !longRepeatedBinary;
+}
+
 function detailRowsHtml(rows) {
   return rows
     .map(([label, value]) => {
@@ -444,13 +456,13 @@ function documentViewerHtml(row, typeLabel) {
     contentType.startsWith("image/") ||
     contentType.startsWith("text/");
   const extractedText = String(row.document_text || "").trim();
-  const preview = canEmbed
-    ? `<iframe class="document-viewer-frame" src="${escapeHtml(viewUrl)}" title="${escapeHtml(filename)}"></iframe>`
-    : `<div class="document-text-preview">${
-        extractedText
-          ? escapeHtml(extractedText)
-          : "이 문서 형식은 브라우저 내부 미리보기를 지원하지 않습니다. 원본 다운로드로 확인해 주세요."
-      }</div>`;
+  const canPreviewText = isReadableDocumentText(extractedText);
+  let preview = `<div class="document-viewer-empty">이 문서 형식은 브라우저 내부 미리보기를 지원하지 않거나 추출 텍스트를 안전하게 표시할 수 없습니다. 원본 다운로드로 확인해 주세요.</div>`;
+  if (canEmbed) {
+    preview = `<iframe class="document-viewer-frame" src="${escapeHtml(viewUrl)}" title="${escapeHtml(filename)}"></iframe>`;
+  } else if (canPreviewText) {
+    preview = `<div class="document-text-preview">${escapeHtml(extractedText)}</div>`;
+  }
   return `
     <div class="document-viewer">
       <div class="document-viewer-toolbar">
