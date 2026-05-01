@@ -408,10 +408,15 @@ function formatAmount(amount, currency = "KRW") {
   return `${currency || "KRW"} ${number.toLocaleString("ko-KR")}`;
 }
 
-function showDetail(title, rows) {
-  if (customerDetailTitle) customerDetailTitle.textContent = title || "상세 정보";
-  if (!customerDetailList) return;
-  customerDetailList.innerHTML = rows
+function documentLinkValue(row) {
+  if (!row?.document_url) return "-";
+  return {
+    html: `<a class="document-download-link" href="${escapeHtml(row.document_url)}" target="_blank" rel="noopener">${escapeHtml(row.document_filename || "파일 다운로드")}</a>`,
+  };
+}
+
+function detailRowsHtml(rows) {
+  return rows
     .map(([label, value]) => {
       const content = value && typeof value === "object" && value.html ? value.html : escapeHtml(value || "-");
       return `<div><dt>${escapeHtml(label)}</dt><dd>${content}</dd></div>`;
@@ -419,11 +424,85 @@ function showDetail(title, rows) {
     .join("");
 }
 
-function documentLinkValue(row) {
-  if (!row?.document_url) return "-";
-  return {
-    html: `<a class="document-download-link" href="${escapeHtml(row.document_url)}" target="_blank" rel="noopener">${escapeHtml(row.document_filename || "파일 다운로드")}</a>`,
-  };
+function showDetail(title, rows) {
+  if (customerDetailTitle) customerDetailTitle.textContent = title || "상세 정보";
+  if (!customerDetailList) return;
+  customerDetailList.classList.remove("detail-list-tabbed");
+  customerDetailList.innerHTML = detailRowsHtml(rows);
+}
+
+function documentViewerHtml(row, typeLabel) {
+  if (!row?.document_id) {
+    return `<div class="document-viewer-empty">${escapeHtml(typeLabel)}에 연결된 업로드 문서가 없습니다.</div>`;
+  }
+  const filename = row.document_filename || "업로드 문서";
+  const downloadUrl = row.document_url || `/api/documents/${row.document_id}/download`;
+  const viewUrl = row.document_view_url || `/api/documents/${row.document_id}/view`;
+  const contentType = String(row.document_content_type || "").toLowerCase();
+  const canEmbed =
+    contentType.startsWith("application/pdf") ||
+    contentType.startsWith("image/") ||
+    contentType.startsWith("text/");
+  const extractedText = String(row.document_text || "").trim();
+  const preview = canEmbed
+    ? `<iframe class="document-viewer-frame" src="${escapeHtml(viewUrl)}" title="${escapeHtml(filename)}"></iframe>`
+    : `<div class="document-text-preview">${
+        extractedText
+          ? escapeHtml(extractedText)
+          : "이 문서 형식은 브라우저 내부 미리보기를 지원하지 않습니다. 원본 다운로드로 확인해 주세요."
+      }</div>`;
+  return `
+    <div class="document-viewer">
+      <div class="document-viewer-toolbar">
+        <span>${escapeHtml(filename)}</span>
+        <a class="document-download-link" href="${escapeHtml(downloadUrl)}" target="_blank" rel="noopener">다운로드</a>
+      </div>
+      ${preview}
+    </div>
+  `;
+}
+
+function showTabbedDetail(title, tabs) {
+  if (customerDetailTitle) customerDetailTitle.textContent = title || "상세 정보";
+  if (!customerDetailList) return;
+  const safeTabs = tabs.filter(Boolean);
+  customerDetailList.classList.add("detail-list-tabbed");
+  customerDetailList.innerHTML = `
+    <div class="detail-tabs">
+      <div class="detail-tab-list" role="tablist">
+        ${safeTabs
+          .map(
+            (tab, index) => `
+              <button class="detail-tab-button${index === 0 ? " active" : ""}" type="button" role="tab"
+                aria-selected="${index === 0 ? "true" : "false"}" data-detail-tab="${escapeHtml(tab.id)}">
+                ${escapeHtml(tab.label)}
+              </button>
+            `
+          )
+          .join("")}
+      </div>
+      ${safeTabs
+        .map((tab, index) => {
+          const content = tab.html || detailRowsHtml(tab.rows || []);
+          return `<section class="detail-tab-panel${index === 0 ? " active" : ""}" role="tabpanel" data-detail-panel="${escapeHtml(tab.id)}">${content}</section>`;
+        })
+        .join("")}
+    </div>
+  `;
+
+  customerDetailList.querySelectorAll("[data-detail-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tabId = button.dataset.detailTab;
+      customerDetailList.querySelectorAll("[data-detail-tab]").forEach((item) => {
+        const isActive = item.dataset.detailTab === tabId;
+        item.classList.toggle("active", isActive);
+        item.setAttribute("aria-selected", isActive ? "true" : "false");
+      });
+      customerDetailList.querySelectorAll("[data-detail-panel]").forEach((panel) => {
+        panel.classList.toggle("active", panel.dataset.detailPanel === tabId);
+      });
+    });
+  });
 }
 
 function searchIconButton(label = "조회") {
@@ -466,7 +545,11 @@ function bindDataRows(rows, detailFactory, options = {}) {
     row.classList.add("selected");
     const item = rows[Number(row.dataset.rowIndex)];
     const detail = detailFactory(item);
-    showDetail(detail.title, detail.rows);
+    if (detail.tabs) {
+      showTabbedDetail(detail.title, detail.tabs);
+    } else {
+      showDetail(detail.title, detail.rows);
+    }
     if (options.scroll !== false) row.scrollIntoView({ block: "nearest" });
   };
 
@@ -558,14 +641,25 @@ function renderQuoteView(rows = []) {
   });
   bindDataRows(rows, (row) => ({
     title: row.title || row.quote_no || "견적 상세",
-    rows: [
-      ["견적번호", row.quote_no],
-      ["견적일", formatDateOnly(row.created_at)],
-      ["견적명", row.title],
-      ["회사명", row.company_name],
-      ["고객명", row.contact_name],
-      ["상태", row.status],
-      ["금액", formatAmount(row.total_amount, row.currency)],
+    tabs: [
+      {
+        id: "summary",
+        label: "상세",
+        rows: [
+          ["견적번호", row.quote_no],
+          ["견적일", formatDateOnly(row.created_at)],
+          ["견적명", row.title],
+          ["회사명", row.company_name],
+          ["고객명", row.contact_name],
+          ["상태", row.status],
+          ["금액", formatAmount(row.total_amount, row.currency)],
+        ],
+      },
+      {
+        id: "document",
+        label: "업로드 문서",
+        html: documentViewerHtml(row, "견적"),
+      },
     ],
   }));
 }
@@ -605,15 +699,26 @@ function renderContractView(rows = []) {
   });
   bindDataRows(rows, (row) => ({
     title: row.title || row.contract_no || "계약 상세",
-    rows: [
-      ["계약번호", row.contract_no],
-      ["계약명", row.title],
-      ["회사명", row.company_name],
-      ["고객명", row.contact_name],
-      ["상태", row.status],
-      ["금액", formatAmount(row.contract_amount, row.currency)],
-      ["시작일", formatDateOnly(row.start_date)],
-      ["종료일", formatDateOnly(row.end_date)],
+    tabs: [
+      {
+        id: "summary",
+        label: "상세",
+        rows: [
+          ["계약번호", row.contract_no],
+          ["계약명", row.title],
+          ["회사명", row.company_name],
+          ["고객명", row.contact_name],
+          ["상태", row.status],
+          ["금액", formatAmount(row.contract_amount, row.currency)],
+          ["시작일", formatDateOnly(row.start_date)],
+          ["종료일", formatDateOnly(row.end_date)],
+        ],
+      },
+      {
+        id: "document",
+        label: "업로드 문서",
+        html: documentViewerHtml(row, "계약"),
+      },
     ],
   }));
 }

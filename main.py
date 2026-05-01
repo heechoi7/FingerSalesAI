@@ -12,7 +12,7 @@ import re
 import secrets
 import time
 from typing import Any
-from urllib.parse import unquote, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
 from xml.etree import ElementTree as ET
 import zipfile
@@ -4549,6 +4549,49 @@ async def download_document(document_id: int, request: Request):
     )
 
 
+@app.get("/api/documents/{document_id}/view")
+async def view_document(document_id: int, request: Request):
+    session = require_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT id, tenant_id, owner_user_id, original_filename, storage_path, content_type
+            FROM uploaded_documents
+            WHERE id = %s
+              AND tenant_id = %s
+              AND owner_user_id = %s
+              AND deleted_at IS NULL
+            """,
+            (document_id, session["tenant_id"], session["user_id"]),
+        )
+        document = cursor.fetchone()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document file was not found.")
+    path = Path(document["storage_path"]).resolve()
+    base = DOCUMENT_UPLOAD_DIR.resolve()
+    try:
+        path.relative_to(base)
+    except Exception:
+        raise HTTPException(status_code=403, detail="Document path is not allowed.")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Document file is missing on the server.")
+    record_audit_event(
+        session,
+        "view",
+        "uploaded_document",
+        document_id,
+        None,
+        {"filename": document["original_filename"]},
+        request,
+    )
+    return FileResponse(
+        path,
+        media_type=document.get("content_type") or "application/octet-stream",
+        headers={"Content-Disposition": f"inline; filename*=utf-8''{quote(document['original_filename'])}"},
+    )
+
+
 @app.get("/api/db/health")
 async def db_health():
     try:
@@ -4829,7 +4872,10 @@ async def list_quotes(
                 o.name AS opportunity_name,
                 ud.id AS document_id,
                 ud.original_filename AS document_filename,
-                CONCAT('/api/documents/', ud.id, '/download') AS document_url
+                ud.content_type AS document_content_type,
+                ud.extracted_text AS document_text,
+                CONCAT('/api/documents/', ud.id, '/download') AS document_url,
+                CONCAT('/api/documents/', ud.id, '/view') AS document_view_url
             FROM quotes q
             LEFT JOIN accounts a
                    ON a.id = q.account_id
@@ -4907,7 +4953,10 @@ async def list_contracts(
                 o.name AS opportunity_name,
                 ud.id AS document_id,
                 ud.original_filename AS document_filename,
-                CONCAT('/api/documents/', ud.id, '/download') AS document_url
+                ud.content_type AS document_content_type,
+                ud.extracted_text AS document_text,
+                CONCAT('/api/documents/', ud.id, '/download') AS document_url,
+                CONCAT('/api/documents/', ud.id, '/view') AS document_view_url
             FROM contracts ct
             LEFT JOIN accounts a
                    ON a.id = ct.account_id

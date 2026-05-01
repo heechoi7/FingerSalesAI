@@ -971,6 +971,124 @@ h3 {
   line-height: 1.35;
 }
 
+.detail-list-tabbed {
+  padding: 0;
+  display: block;
+}
+
+.detail-tabs {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.detail-tab-list {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-tab-button {
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.detail-tab-button.active {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--charcoal);
+}
+
+.detail-tab-panel {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px;
+  display: none;
+}
+
+.detail-tab-panel.active {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-tab-panel > div {
+  display: grid;
+  grid-template-columns: 86px 1fr;
+  gap: 12px;
+}
+
+.document-viewer {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(180px, 1fr);
+  gap: 10px;
+}
+
+.document-viewer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  color: var(--charcoal);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.document-viewer-toolbar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-viewer-frame,
+.document-text-preview,
+.document-viewer-empty {
+  width: 100%;
+  min-height: 220px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.document-viewer-frame {
+  height: clamp(220px, 30vh, 520px);
+}
+
+.document-text-preview,
+.document-viewer-empty {
+  overflow: auto;
+  padding: 14px;
+  color: var(--charcoal);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.document-viewer-empty {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  text-align: center;
+}
+
 .status-dot {
   display: inline-flex;
   align-items: center;

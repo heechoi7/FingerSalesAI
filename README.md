@@ -423,6 +423,24 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 견적/계약 상세 탭과 업로드 문서 내부 뷰어
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `styles.css`
+- `README.md`
+
+변경 내용:
+- 견적과 계약 목록에서 최근 연결된 업로드 문서의 콘텐츠 타입, 추출 텍스트, 내부 보기 URL을 함께 내려주도록 조회 API를 확장했습니다.
+- `/api/documents/{document_id}/view` 엔드포인트를 추가해 인증된 동일 테넌트/사용자 문서만 inline 방식으로 열 수 있게 했습니다.
+- 견적/계약 하단 상세 영역을 `상세`, `업로드 문서` 탭 구조로 바꾸고, PDF/이미지/텍스트는 내부 프레임으로, Word/Excel 등 브라우저 직접 보기 어려운 문서는 추출 텍스트 미리보기로 확인하도록 구성했습니다.
+- 문서 탭에는 원본 다운로드 링크도 유지해 내부 미리보기와 원본 파일 확인을 함께 지원합니다.
+
+검증:
+- `node --check script.js`
+- `.venv\Scripts\python.exe -m py_compile main.py`
+
 ### 2026-05-01: 그리드 필터 입력/검색 버튼 정렬 조정
 
 변경 파일:
