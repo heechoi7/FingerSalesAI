@@ -161,12 +161,15 @@ MYSQL_DATABASE=FingerSalesAI
 MYSQL_USER=...
 MYSQL_PASSWORD=...
 MYSQL_TENANT_ID=1
+APP_SESSION_SECRET=...
+FSAI_EXTRA_ENV_PATH=
 ```
 
 주의:
 
 - 실제 비밀번호와 API 키는 문서에 쓰지 않습니다.
 - `.env.example`에는 형식과 변수 이름만 유지합니다.
+- 다른 프로젝트의 `.env`를 자동으로 읽지 않으며, 특별히 필요할 때만 `FSAI_EXTRA_ENV_PATH`에 명시합니다.
 
 ### 2.2 핵심 테이블
 
@@ -562,9 +565,19 @@ const memory = {
 - `POST /api/auth/register`
 - 입력: `tenant_code`, `tenant_name`, `name`, `email`, `password`, `role`
 - 테넌트가 없으면 생성
-- 테넌트가 있으면 사용자 추가
+- 테넌트가 없으면 첫 사용자는 서버에서 `owner`로 생성
+- 기존 테넌트 가입은 기본적으로 차단
+- 기존 테넌트 self-join을 허용하려면 `ALLOW_EXISTING_TENANT_SELF_JOIN=true` 설정 필요
+- `TENANT_JOIN_CODE`가 설정되어 있으면 가입 코드가 일치해야 기존 테넌트에 참여 가능
+- 기존 테넌트 self-join에서 허용되는 역할은 `sales`, `viewer` 중심이며, 서버가 권한 상승을 제한
 - 비밀번호는 bcrypt 해시로 저장
 - 회원가입 성공 후 자동 로그인하지 않고 로그인 화면으로 복귀
+
+보안 보강:
+
+- 로그인/회원가입 API에는 IP 기반 in-memory rate limit이 적용됩니다.
+- 기본값은 60초 동안 10회입니다.
+- 운영 다중 인스턴스 환경에서는 Redis 같은 공유 저장소 기반 rate limit으로 교체해야 합니다.
 
 로그아웃:
 
@@ -585,6 +598,7 @@ fsai_session
 - HTTP-only
 - SameSite=Lax
 - path=/
+- production 환경에서는 Secure cookie 사용
 - HMAC 서명
 - 기본 만료 시간 12시간
 
@@ -595,6 +609,14 @@ APP_SESSION_SECRET
 ```
 
 운영에서는 반드시 긴 랜덤 값으로 설정합니다.
+
+운영 환경:
+
+- `APP_ENV=production`이면 `APP_SESSION_SECRET`은 32자 이상이어야 합니다.
+- `APP_ALLOWED_HOSTS`로 허용 host를 제한할 수 있습니다.
+- `TRUST_PROXY_HEADERS=true`는 신뢰 가능한 reverse proxy 뒤에서만 켜고, 그렇지 않으면 클라이언트가 보낸 `X-Forwarded-For`를 신뢰하지 않습니다.
+- 보안 응답 헤더가 기본 적용됩니다.
+- production에서는 HSTS 헤더가 추가됩니다.
 
 ### 6.3 역할 정의
 
@@ -638,6 +660,34 @@ viewer
 - 컬럼 이름
 - 해시 알고리즘 종류
 - 테스트 결과 상태 코드
+
+### 6.5 안정성 및 성능 기준
+
+DB 연결:
+
+- `database.py`는 MySQL connection pool을 사용합니다.
+- 기본 pool size는 `MYSQL_POOL_SIZE=10`입니다.
+- 연결 timeout은 `MYSQL_CONNECTION_TIMEOUT`으로 제어합니다.
+
+서버 보안 헤더:
+
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
+- production에서 `Strict-Transport-Security`
+
+추후 클라우드 필수 작업:
+
+- Redis 기반 rate limit
+- 중앙 로그/모니터링
+- structured logging
+- request id 전파
+- reverse proxy의 forwarded header 신뢰 범위 문서화와 운영 설정
+- DB migration
+- 백업/복구 전략
+- 비동기 작업 큐
+- 파일 업로드 크기 제한과 스토리지 분리
 
 ## 7. Windows/Mac 작업 연속성
 

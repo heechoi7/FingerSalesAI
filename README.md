@@ -67,11 +67,26 @@ MYSQL_PASSWORD=...
 MYSQL_TENANT_ID=1
 
 APP_SESSION_SECRET=...
+FSAI_EXTRA_ENV_PATH=
+APP_ENV=development
+APP_ALLOWED_HOSTS=
+SESSION_COOKIE_SECURE=false
+SESSION_COOKIE_SAMESITE=lax
+MIN_PASSWORD_LENGTH=8
+AUTH_RATE_LIMIT_MAX=10
+AUTH_RATE_LIMIT_WINDOW_SECONDS=60
+TRUST_PROXY_HEADERS=false
+MYSQL_POOL_SIZE=10
+MYSQL_CONNECTION_TIMEOUT=10
+ALLOW_EXISTING_TENANT_SELF_JOIN=false
+TENANT_JOIN_CODE=
 ```
 
 주의:
 - `.env`에는 실제 키와 비밀번호가 들어가므로 문서나 외부 공유물에 직접 복사하지 않습니다.
 - `APP_SESSION_SECRET`은 로그인 세션 쿠키 서명에 사용됩니다. 운영 또는 외부 접속 환경에서는 긴 랜덤 값으로 설정해야 합니다.
+- `APP_ENV=production`에서는 `APP_SESSION_SECRET`이 32자 이상이어야 서버가 시작됩니다.
+- `ALLOW_EXISTING_TENANT_SELF_JOIN=false`가 기본이며, 기존 테넌트 가입은 관리자 초대/가입 코드 방식으로 제한해야 합니다.
 - `MYSQL_TENANT_ID`는 로그인 이전 기본값 또는 로컬 기본값 용도였고, 현재 후속 작업 API는 로그인 세션의 `tenant_id`를 우선 사용합니다.
 
 ## 실행 방법
@@ -508,6 +523,46 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 검증:
 - `git push -u origin main` 성공
+
+### 2026-05-01: 클라우드 SaaS 운영 기준 보안/안정성 보강
+
+변경 파일:
+- `main.py`
+- `database.py`
+- `login.html`
+- `.env.example`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 운영 환경에서 짧거나 비어 있는 `APP_SESSION_SECRET`으로 서버가 시작되지 않도록 방어했습니다.
+- 세션 쿠키에 `path`, `secure`, `samesite` 설정을 환경 변수 기반으로 명확히 적용했습니다.
+- 보안 응답 헤더 middleware를 추가했습니다.
+- production 환경에서 HSTS 헤더를 추가하도록 했습니다.
+- `APP_ALLOWED_HOSTS` 설정 시 Trusted Host middleware를 적용하도록 했습니다.
+- `TRUST_PROXY_HEADERS`가 켜진 경우에만 `X-Forwarded-For`를 신뢰하도록 해 프록시가 없는 환경에서 클라이언트 IP 위조 가능성을 줄였습니다.
+- 로그인/회원가입 API에 IP 기반 in-memory rate limit을 추가했습니다.
+- 비밀번호 최소 길이를 `MIN_PASSWORD_LENGTH` 환경 변수로 관리하고 기본 8자로 강화했습니다.
+- 기존 테넌트 self-join을 기본 차단했습니다.
+- 신규 테넌트 첫 사용자는 서버에서 `owner`로 생성하도록 했습니다.
+- 기존 테넌트 self-join을 열 경우 가입 코드와 제한된 역할만 허용하도록 했습니다.
+- DB 연결을 매 요청 신규 연결에서 MySQL connection pool 방식으로 변경했습니다.
+- `database.py`가 직접 `.env`를 로드하도록 해 환경 변수 로드 순서 문제를 줄였습니다.
+- 다른 로컬 프로젝트의 `.env`를 하드코딩해서 읽던 경로를 제거하고, 필요한 경우 `FSAI_EXTRA_ENV_PATH`로 명시하도록 변경했습니다.
+- 회원가입 화면에 가입 코드 입력을 추가하고 역할 선택을 제한했습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+
+남은 작업:
+- Redis 기반 rate limit으로 교체
+- 운영 로그/모니터링/알림 구성
+- reverse proxy의 forwarded header 신뢰 범위와 배포 설정 확정
+- DB migration 도입
+- 업로드 파일 크기 제한 및 스토리지 분리
+- 역할별 권한 정책 세분화
 
 ### 2026-04-30: 상단 사용자 표시 중복 제거
 

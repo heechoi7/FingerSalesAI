@@ -9,6 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -20,7 +21,9 @@ from database import contact_row_to_customer, db_connection, init_db, none_if_bl
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
-load_dotenv(Path("C:/Work/Code/NameCard/.env"))
+extra_env_path = os.getenv("FSAI_EXTRA_ENV_PATH")
+if extra_env_path:
+    load_dotenv(Path(extra_env_path))
 
 if not os.getenv("GOOGLE_API_KEY") and os.getenv("GEMINI_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
@@ -29,9 +32,31 @@ from graph import app_graph, content_to_text, create_gemini_model
 
 app = FastAPI(title="FingerSalesAI")
 
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+IS_PRODUCTION = APP_ENV in {"production", "prod"}
 SESSION_COOKIE_NAME = "fsai_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 12
-SESSION_SECRET = os.getenv("APP_SESSION_SECRET") or os.getenv("MYSQL_PASSWORD", "fingersalesai-dev")
+SESSION_SECRET = os.getenv("APP_SESSION_SECRET", "")
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true" if IS_PRODUCTION else "false").lower() == "true"
+SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "lax")
+MIN_PASSWORD_LENGTH = int(os.getenv("MIN_PASSWORD_LENGTH", "8"))
+AUTH_RATE_LIMIT_MAX = int(os.getenv("AUTH_RATE_LIMIT_MAX", "10"))
+AUTH_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "60"))
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
+ALLOW_EXISTING_TENANT_SELF_JOIN = os.getenv("ALLOW_EXISTING_TENANT_SELF_JOIN", "false").lower() == "true"
+TENANT_JOIN_CODE = os.getenv("TENANT_JOIN_CODE", "")
+TENANT_SELF_JOIN_ROLES = {"sales", "viewer"}
+_auth_attempts: dict[str, list[float]] = {}
+
+if IS_PRODUCTION and len(SESSION_SECRET) < 32:
+    raise RuntimeError("APP_SESSION_SECRET must be set to at least 32 characters in production.")
+if not SESSION_SECRET:
+    SESSION_SECRET = "dev-only-change-me"
+
+allowed_hosts = [host.strip() for host in os.getenv("APP_ALLOWED_HOSTS", "").split(",") if host.strip()]
+if allowed_hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
 USER_ROLES = {
     "owner": "소유자",
     "admin": "관리자",
@@ -69,6 +94,7 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
     role: str = "sales"
+    join_code: str = ""
 
 
 class CustomerPayload(BaseModel):
@@ -95,6 +121,35 @@ class CustomerPayload(BaseModel):
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if IS_PRODUCTION:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
+def client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if TRUST_PROXY_HEADERS and forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def enforce_auth_rate_limit(request: Request, bucket: str) -> None:
+    now = time.time()
+    key = f"{bucket}:{client_ip(request)}"
+    attempts = [timestamp for timestamp in _auth_attempts.get(key, []) if now - timestamp < AUTH_RATE_LIMIT_WINDOW_SECONDS]
+    if len(attempts) >= AUTH_RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="잠시 후 다시 시도해 주세요.")
+    attempts.append(now)
+    _auth_attempts[key] = attempts
 
 
 def b64url_encode(value: bytes) -> str:
@@ -206,19 +261,21 @@ def set_session_cookie(response: Response, session: dict[str, Any]) -> None:
         max_age=SESSION_MAX_AGE_SECONDS,
         path="/",
         httponly=True,
-        samesite="lax",
+        secure=SESSION_COOKIE_SECURE,
+        samesite=SESSION_COOKIE_SAMESITE,
     )
 
 
 def clear_session_cookie(response: Response) -> None:
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/", samesite="lax")
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/", samesite=SESSION_COOKIE_SAMESITE)
+    secure_attr = "; Secure" if SESSION_COOKIE_SECURE else ""
     response.headers.append(
         "set-cookie",
-        f"{SESSION_COOKIE_NAME}=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; SameSite=Lax; HttpOnly",
+        f"{SESSION_COOKIE_NAME}=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; SameSite={SESSION_COOKIE_SAMESITE.capitalize()}; HttpOnly{secure_attr}",
     )
     response.headers.append(
         "set-cookie",
-        f"{SESSION_COOKIE_NAME}=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax; HttpOnly",
+        f"{SESSION_COOKIE_NAME}=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite={SESSION_COOKIE_SAMESITE.capitalize()}; HttpOnly{secure_attr}",
     )
 
 
@@ -490,10 +547,11 @@ def build_chat_context(context: dict[str, Any] | None) -> str:
 
 
 @app.post("/api/auth/login")
-async def login(request: LoginRequest, response: Response):
-    tenant_code = request.tenant_code.strip()
-    email = request.email.strip().lower()
-    if not tenant_code or not email or not request.password:
+async def login(payload: LoginRequest, response: Response, request: Request):
+    enforce_auth_rate_limit(request, "login")
+    tenant_code = payload.tenant_code.strip()
+    email = payload.email.strip().lower()
+    if not tenant_code or not email or not payload.password:
         raise HTTPException(status_code=400, detail="테넌트, 이메일, 비밀번호를 입력해 주세요.")
 
     with db_connection() as connection:
@@ -525,7 +583,7 @@ async def login(request: LoginRequest, response: Response):
         row = cursor.fetchone()
         if not row or row["user_status"] != "active" or row["tenant_status"] not in ("active", "trial"):
             raise HTTPException(status_code=401, detail="로그인 정보를 확인해 주세요.")
-        if not verify_password(request.password, row.get("password_hash")):
+        if not verify_password(payload.password, row.get("password_hash")):
             raise HTTPException(status_code=401, detail="로그인 정보를 확인해 주세요.")
 
         cursor.execute("UPDATE users SET last_login_at = NOW(6) WHERE id = %s", (row["user_id"],))
@@ -535,20 +593,22 @@ async def login(request: LoginRequest, response: Response):
 
 
 @app.post("/api/auth/register")
-async def register(request: RegisterRequest):
-    tenant_code = request.tenant_code.strip()
-    tenant_name = request.tenant_name.strip() or tenant_code
-    name = request.name.strip()
-    email = request.email.strip().lower()
-    password = request.password
-    role = request.role.strip()
+async def register(payload: RegisterRequest, request: Request):
+    enforce_auth_rate_limit(request, "register")
+    tenant_code = payload.tenant_code.strip()
+    tenant_name = payload.tenant_name.strip() or tenant_code
+    name = payload.name.strip()
+    email = payload.email.strip().lower()
+    password = payload.password
+    role = payload.role.strip()
+    join_code = payload.join_code.strip()
 
     if not tenant_code or not name or not email or not password:
         raise HTTPException(status_code=400, detail="테넌트, 이름, 이메일, 비밀번호를 입력해 주세요.")
     if role not in USER_ROLES:
         raise HTTPException(status_code=400, detail="사용자 역할을 확인해 주세요.")
-    if len(password) < 4:
-        raise HTTPException(status_code=400, detail="비밀번호는 4자 이상 입력해 주세요.")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=400, detail=f"비밀번호는 {MIN_PASSWORD_LENGTH}자 이상 입력해 주세요.")
 
     with db_connection() as connection:
         cursor = connection.cursor(dictionary=True)
@@ -568,6 +628,7 @@ async def register(request: RegisterRequest):
             raise HTTPException(status_code=409, detail="사용할 수 없는 테넌트입니다.")
 
         if not tenant:
+            role = "owner"
             cursor.execute(
                 """
                 INSERT INTO tenants (tenant_code, name, status)
@@ -581,6 +642,13 @@ async def register(request: RegisterRequest):
                 "name": tenant_name,
                 "status": "active",
             }
+        else:
+            if not ALLOW_EXISTING_TENANT_SELF_JOIN:
+                raise HTTPException(status_code=403, detail="기존 테넌트 가입은 관리자 초대가 필요합니다.")
+            if TENANT_JOIN_CODE and not hmac.compare_digest(join_code, TENANT_JOIN_CODE):
+                raise HTTPException(status_code=403, detail="가입 코드가 올바르지 않습니다.")
+            if role not in TENANT_SELF_JOIN_ROLES:
+                role = "sales"
 
         cursor.execute(
             """

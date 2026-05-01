@@ -1,8 +1,14 @@
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Iterator
 
 import mysql.connector
+from dotenv import load_dotenv
+from mysql.connector import pooling
+
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 DB_CONFIG = {
@@ -13,14 +19,30 @@ DB_CONFIG = {
     "password": os.getenv("MYSQL_PASSWORD", ""),
     "charset": "utf8mb4",
     "use_unicode": True,
+    "connection_timeout": int(os.getenv("MYSQL_CONNECTION_TIMEOUT", "10")),
 }
 
 DEFAULT_TENANT_ID = int(os.getenv("MYSQL_TENANT_ID", "1"))
+DB_POOL_SIZE = int(os.getenv("MYSQL_POOL_SIZE", "10"))
+DB_POOL_NAME = os.getenv("MYSQL_POOL_NAME", "fingersalesai_pool")
+_connection_pool: pooling.MySQLConnectionPool | None = None
+
+
+def get_connection_pool() -> pooling.MySQLConnectionPool:
+    global _connection_pool
+    if _connection_pool is None:
+        _connection_pool = pooling.MySQLConnectionPool(
+            pool_name=DB_POOL_NAME,
+            pool_size=DB_POOL_SIZE,
+            pool_reset_session=True,
+            **DB_CONFIG,
+        )
+    return _connection_pool
 
 
 @contextmanager
 def db_connection() -> Iterator[mysql.connector.MySQLConnection]:
-    connection = mysql.connector.connect(**DB_CONFIG)
+    connection = get_connection_pool().get_connection()
     try:
         yield connection
         connection.commit()
