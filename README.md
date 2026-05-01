@@ -275,6 +275,13 @@ http://localhost:8000/
   - 이름이 확인된 항목만 accounts/contacts에 저장
   - 한 번에 처리 가능한 링크 수는 `MAX_SNS_LINKS_PER_REQUEST`로 제한
 
+- `POST /api/inspect/sns`
+  - body: `message`
+  - SNS 링크를 플랫폼/대상 유형/핸들로 구분
+  - 공개 메타데이터와 URL 구조 기반 이름 후보, 설명, 후보 fetch URL을 반환
+  - 고객 DB에는 저장하지 않음
+  - 현재 프론트 SNS 입력 흐름은 이 API를 우선 사용
+
 채팅:
 
 - `POST /api/chat`
@@ -799,6 +806,31 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 - `uv run python -m py_compile main.py database.py graph.py` 통과
 - `uv run python -c "import main; print('app import ok')"` 통과
 - `uv run python -m unittest discover -s tests` 통과
+
+### 2026-05-01: SNS 링크 정보 확인 단계 분리
+
+변경 파일:
+- `main.py`
+- `script.js`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- SNS 링크 입력 흐름을 고객 저장 중심에서 `SNS 종류 구별 + 공개 정보 확인` 중심으로 조정했습니다.
+- 신규 `POST /api/inspect/sns` API를 추가했습니다.
+- inspect API는 링크를 플랫폼, 대상 유형, 핸들, 표시명, 이름 후보, 공개 메타데이터, 후보 fetch URL, 저장 가능 여부로 정리해 반환합니다.
+- 프론트의 SNS 링크 입력은 `/api/extract/sns` 저장 API 대신 `/api/inspect/sns`를 호출하도록 변경했습니다.
+- 채팅 fallback으로 SNS 링크가 들어와도 고객 저장 대신 SNS 정보 확인 결과를 반환하도록 변경했습니다.
+- 기존 `/api/extract/sns` 저장 API는 호환용으로 유지했습니다.
+- SNS 결과 UI는 “아직 고객 정보로 저장하지 않음”을 명확히 표시합니다.
+- SNS 플랫폼 분류와 inspect 결과에 대한 회귀 테스트를 추가했습니다.
+
+검증:
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py tests/test_security_regressions.py` 통과
+- `uv run python -m unittest discover -s tests` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
 
 ### 2026-05-01: 클라우드 SaaS 운영 기준 보안/안정성 보강
 

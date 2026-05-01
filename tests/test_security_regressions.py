@@ -87,6 +87,36 @@ class SecurityRegressionTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 413)
 
+    def test_social_links_are_classified_by_platform(self):
+        links = main.extract_social_links(
+            "https://www.linkedin.com/in/sara-kim-12345678 "
+            "https://m.facebook.com/hihihihi2345 "
+            "https://www.instagram.com/sales.ai/"
+        )
+
+        self.assertEqual([link["platform"] for link in links], ["LinkedIn", "Facebook", "Instagram"])
+        self.assertEqual([link["entity_type"] for link in links], ["person", "profile", "profile"])
+
+    def test_social_inspection_uses_metadata_without_saving(self):
+        link = main.classify_social_link("https://facebook.com/hihihihi2345", "Facebook")
+        with patch(
+            "main.fetch_social_public_metadata",
+            return_value={
+                "title": "박광영 | Facebook",
+                "og_title": "박광영 | Facebook",
+                "twitter_title": "",
+                "description": "Facebook profile",
+                "og_description": "",
+                "fetch_error": "",
+            },
+        ):
+            item = main.inspect_social_link(link)
+
+        self.assertEqual(item["platform"], "Facebook")
+        self.assertEqual(item["profile_name"], "박광영")
+        self.assertEqual(item["name_confidence"], "high")
+        self.assertFalse(item["saved"])
+
 
 if __name__ == "__main__":
     unittest.main()

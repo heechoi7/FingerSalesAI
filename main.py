@@ -577,6 +577,70 @@ def social_link_to_card_data(link: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def social_entity_label(entity_type: str) -> str:
+    return {
+        "company": "회사",
+        "channel": "채널",
+        "blog": "블로그",
+        "person": "개인",
+        "profile": "프로필",
+    }.get(entity_type, entity_type or "프로필")
+
+
+def best_social_description(metadata: dict[str, str]) -> str:
+    return (
+        metadata.get("og_description")
+        or metadata.get("description")
+        or metadata.get("title")
+        or metadata.get("og_title")
+        or ""
+    )
+
+
+def inspect_social_link(link: dict[str, Any]) -> dict[str, Any]:
+    public_metadata = fetch_social_public_metadata(link)
+    metadata_name = social_profile_name_from_metadata(public_metadata, link["platform"])
+    slug_name = link.get("name_candidate") or social_name_candidate_from_slug(
+        link.get("platform", ""),
+        link.get("entity_type", ""),
+        link.get("handle", ""),
+    )
+    profile_name = ""
+    name_source = ""
+    confidence = "none"
+
+    if metadata_name and metadata_name_is_authoritative(link, metadata_name):
+        profile_name = metadata_name
+        name_source = "public_profile_metadata"
+        confidence = "high"
+    elif slug_name:
+        profile_name = slug_name
+        name_source = "profile_url_slug"
+        confidence = "medium"
+
+    fetched = any(public_metadata.get(key) for key in ("title", "og_title", "twitter_title", "description", "og_description"))
+    status = "profile_name_found" if profile_name else "metadata_found" if fetched else "metadata_unavailable"
+
+    return {
+        "url": link["url"],
+        "platform": link["platform"],
+        "entity_type": link["entity_type"],
+        "entity_label": social_entity_label(link["entity_type"]),
+        "handle": link.get("handle") or "",
+        "display_name": link.get("display_name") or "",
+        "profile_name": profile_name,
+        "name_source": name_source,
+        "name_confidence": confidence,
+        "name_candidate": slug_name,
+        "metadata": public_metadata,
+        "metadata_summary": best_social_description(public_metadata),
+        "candidate_urls": social_metadata_candidate_urls(link),
+        "status": status,
+        "can_save_customer": bool(profile_name),
+        "saved": False,
+    }
+
+
 def extract_json_object(text: str) -> dict[str, Any]:
     cleaned = (text or "").strip()
     if cleaned.startswith("```"):
@@ -1025,6 +1089,24 @@ def build_sns_import_reply(items: list[dict[str, Any]]) -> str:
             )
         if item.get("saved") and item.get("briefing"):
             lines.extend(["", item["briefing"]])
+    return "\n".join(lines)
+
+
+def build_sns_inspect_reply(items: list[dict[str, Any]]) -> str:
+    lines = ["SNS 링크를 확인해 플랫폼과 공개 프로필 정보를 정리했습니다. 아직 고객 정보로 저장하지 않았습니다."]
+    for item in items:
+        name = item.get("profile_name") or item.get("name_candidate") or "-"
+        summary = item.get("metadata_summary") or "공개 메타데이터를 충분히 가져오지 못했습니다."
+        lines.extend(
+            [
+                "",
+                f"• SNS: {item.get('platform')} / {item.get('entity_label')}",
+                f"• 이름 후보: {name}",
+                f"• 신뢰도: {item.get('name_confidence') or 'none'}",
+                f"• 링크: {item.get('url')}",
+                f"• 확인 정보: {summary}",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -1520,6 +1602,25 @@ async def extract_sns_links(payload: SnsLinksRequest, request: Request):
         return internal_error_response("SNS 링크 처리 중 오류가 발생했습니다.")
 
 
+@app.post("/api/inspect/sns")
+async def inspect_sns_links(payload: SnsLinksRequest, request: Request):
+    require_session(request)
+    links = extract_social_links(payload.message)
+    if not links:
+        raise HTTPException(status_code=400, detail="지원하는 SNS 링크를 찾지 못했습니다.")
+    if len(links) > MAX_SNS_LINKS_PER_REQUEST:
+        raise HTTPException(status_code=400, detail=f"SNS 링크는 한 번에 최대 {MAX_SNS_LINKS_PER_REQUEST}개까지 확인할 수 있습니다.")
+
+    try:
+        items = [inspect_social_link(link) for link in links]
+        return {"success": True, "count": len(items), "items": items}
+    except HTTPException:
+        raise
+    except Exception as error:
+        print("SNS inspection failed:", error)
+        return internal_error_response("SNS 링크 정보를 확인하는 중 오류가 발생했습니다.")
+
+
 @app.get("/api/db/health")
 async def db_health():
     try:
@@ -1650,24 +1751,21 @@ async def chat(chat_request: ChatRequest, request: Request):
     social_links = extract_social_links(message)
     if social_links:
         if len(social_links) > MAX_SNS_LINKS_PER_REQUEST:
-            raise HTTPException(status_code=400, detail=f"SNS 링크는 한 번에 최대 {MAX_SNS_LINKS_PER_REQUEST}개까지 처리할 수 있습니다.")
+            raise HTTPException(status_code=400, detail=f"SNS 링크는 한 번에 최대 {MAX_SNS_LINKS_PER_REQUEST}개까지 확인할 수 있습니다.")
         try:
-            items = [save_sns_customer(link, session["tenant_id"], session["user_id"]) for link in social_links]
-            saved_count = sum(1 for item in items if item.get("saved"))
-            pending_count = sum(1 for item in items if item.get("needs_confirmation"))
+            items = [inspect_social_link(link) for link in social_links]
             return {
                 "success": True,
-                "reply": build_sns_import_reply(items),
-                "sns_imported": True,
-                "count": saved_count,
-                "pending_count": pending_count,
+                "reply": build_sns_inspect_reply(items),
+                "sns_inspected": True,
+                "count": len(items),
                 "items": items,
             }
         except HTTPException:
             raise
         except Exception as error:
-            print("SNS chat fallback failed:", error)
-            return internal_error_response("SNS 링크 처리 중 오류가 발생했습니다.")
+            print("SNS chat inspection failed:", error)
+            return internal_error_response("SNS 링크 정보를 확인하는 중 오류가 발생했습니다.")
 
     try:
         model = create_gemini_model(temperature=0.3)

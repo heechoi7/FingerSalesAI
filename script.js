@@ -652,8 +652,8 @@ function createSnsPlan(text, urls) {
 
   const steps = [
     ["detect", "SNS 구분", `${urls.length}개의 SNS 링크를 플랫폼별로 분류합니다.`, 20],
-    ["normalize", "프로필 정규화", "각 SNS 링크를 명함 입력과 같은 고객/연락처 필드로 변환합니다.", 0],
-    ["save", "고객 등록", "accounts와 contacts에 SNS 기반 고객 후보를 저장합니다.", 0],
+    ["normalize", "정보 가져오기", "플랫폼별 공개 메타데이터와 URL 기반 이름 후보를 확인합니다.", 0],
+    ["save", "저장 판단", "가져온 SNS 정보를 확인하고 고객 저장 가능 여부를 판단합니다.", 0],
   ].map(([id, title, description, value]) => {
     const card = document.createElement("article");
     card.className = "agent-card pending";
@@ -744,6 +744,26 @@ function buildSnsImportHtml(items) {
       ? `SNS 링크를 확인했습니다. 이름이 확인된 ${savedItems.length}건은 저장했고, ${pendingItems.length}건은 프로필 이름을 확정하지 못해 저장하지 않았습니다.`
       : `SNS 링크 ${savedItems.length}건을 고객 정보로 저장했습니다.`;
   return `<p>${escapeHtml(summary)}</p><ul class="card-result-list sns-result-list">${rows}</ul>`;
+}
+
+function buildSnsInspectHtml(items) {
+  const rows = (items || [])
+    .map((item) => {
+      const nameText = item.profile_name || item.name_candidate || "이름 후보 없음";
+      const confidence = item.name_confidence === "high" ? "높음" : item.name_confidence === "medium" ? "보통" : "없음";
+      const summary = item.metadata_summary || "공개 메타데이터를 충분히 가져오지 못했습니다.";
+      return `
+        <li class="sns-result-item">
+          <strong>${escapeHtml(item.platform || "SNS")} · ${escapeHtml(item.entity_label || item.entity_type || "프로필")}</strong>
+          <span class="sns-result-title">${escapeHtml(nameText)}</span>
+          <small>${escapeHtml(item.url || "-")}</small>
+          <span class="sns-result-reason">이름 신뢰도: ${escapeHtml(confidence)} · ${escapeHtml(summary)}</span>
+        </li>
+      `;
+    })
+    .join("");
+
+  return `<p>SNS 링크의 종류와 공개 정보를 확인했습니다. 아직 고객 정보로 저장하지 않았습니다.</p><ul class="card-result-list sns-result-list">${rows}</ul>`;
 }
 
 function buildBriefingHtml(briefing) {
@@ -877,14 +897,14 @@ async function importSnsLinks(text) {
   questionSequence += 1;
   addLogDivider(`SNS ${questionSequence}`);
   const planSteps = createSnsPlan(text, urls);
-  addLog("SNS Agent", `${urls.length}개의 SNS 링크를 프로필 이름 확인 대상으로 감지했습니다.`);
-  const loadingMessage = appendMessage("ai", "SNS 링크를 플랫폼별로 구분하고 공개 프로필 이름을 확인하고 있습니다.");
+  addLog("SNS Agent", `${urls.length}개의 SNS 링크를 플랫폼 구분 및 정보 확인 대상으로 감지했습니다.`);
+  const loadingMessage = appendMessage("ai", "SNS 링크를 플랫폼별로 구분하고 공개 정보를 가져오고 있습니다.");
 
   updatePlanStep(planSteps, "detect", "done", 100, "LinkedIn, Instagram, Facebook, X, YouTube 등 지원 SNS 링크를 분류했습니다.");
-  updatePlanStep(planSteps, "normalize", "active", 50, "공개 프로필 메타데이터에서 이름을 먼저 확인하고 있습니다.");
+  updatePlanStep(planSteps, "normalize", "active", 50, "공개 프로필 메타데이터와 URL 구조를 확인하고 있습니다.");
 
   try {
-    const response = await apiFetch("/api/extract/sns", {
+    const response = await apiFetch("/api/inspect/sns", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -898,40 +918,23 @@ async function importSnsLinks(text) {
     }
 
     loadingMessage.remove();
-    const savedItems = (result.items || []).filter((item) => item.saved);
-    const pendingItems = (result.items || []).filter((item) => item.needs_confirmation);
-    updatePlanStep(planSteps, "normalize", "done", 100, `${savedItems.length}건은 이름을 확인했고, ${pendingItems.length}건은 이름 확인이 필요합니다.`);
+    const namedItems = (result.items || []).filter((item) => item.profile_name);
+    updatePlanStep(planSteps, "normalize", "done", 100, `${result.count || 0}개의 SNS 링크 정보를 확인했고, ${namedItems.length}건에서 이름 후보를 찾았습니다.`);
     updatePlanStep(
       planSteps,
       "save",
-      pendingItems.length > 0 && savedItems.length === 0 ? "skipped" : "done",
-      pendingItems.length > 0 && savedItems.length === 0 ? 0 : 100,
-      pendingItems.length > 0
-        ? "이름을 확정하지 못한 SNS 프로필은 고객으로 저장하지 않았습니다."
-        : "accounts와 contacts에 SNS 기반 고객 정보를 저장했습니다."
+      "skipped",
+      0,
+      "이번 단계에서는 SNS 종류와 공개 정보 확인에 집중하고 고객 DB 저장은 수행하지 않았습니다."
     );
 
-    appendMessage("ai", buildSnsImportHtml(result.items || []), { html: true });
-    savedItems.forEach((item) => {
-      const source = `SNS · ${item.platform || "Unknown"}`;
-      rememberCardInfo({ name: source }, item.data || {}, item.briefing || "", item.customer || null);
-      addCustomerRow(item.data || {}, source, {
-        id: item.customer?.id,
-        createdAt: item.customer?.created_at,
-        customer: item.customer || null,
-      });
-    });
-    savedItems
-      .filter((item) => item.briefing)
-      .forEach((item) => {
-        appendMessage("ai", buildBriefingHtml(item.briefing), { html: true });
-      });
-    rememberMessage("assistant", `SNS 링크 등록 결과: ${JSON.stringify((result.items || []).map((item) => item.data || {}))}`);
+    appendMessage("ai", buildSnsInspectHtml(result.items || []), { html: true });
+    rememberMessage("assistant", `SNS 링크 정보 확인 결과: ${JSON.stringify(result.items || [])}`);
   } catch (error) {
     loadingMessage.remove();
     updatePlanStep(planSteps, "normalize", "error", 100, error.message);
-    updatePlanStep(planSteps, "save", "error", 0, "이전 단계 오류로 SNS 고객 등록을 완료하지 못했습니다.");
-    appendMessage("ai", `SNS 링크를 고객 정보로 저장하지 못했습니다. ${error.message}`);
+    updatePlanStep(planSteps, "save", "error", 0, "이전 단계 오류로 SNS 정보 확인을 완료하지 못했습니다.");
+    appendMessage("ai", `SNS 링크 정보를 확인하지 못했습니다. ${error.message}`);
     addLog("SNS Agent", error.message, "error");
   }
 }
@@ -987,6 +990,9 @@ async function requestChatReply(text) {
           customer: item.customer || null,
         });
       });
+    }
+    if (result.sns_inspected && Array.isArray(result.items)) {
+      appendMessage("ai", buildSnsInspectHtml(result.items), { html: true });
     }
     rememberMessage("assistant", reply);
     addLog("Conversation Agent", "LLM 응답을 채팅창에 반영했습니다.", "done");

@@ -863,23 +863,20 @@ uv run python -c "import main; print('app import ok')"
 처리 흐름:
 1. 사용자가 에이전트 입력창에 SNS 링크를 입력합니다.
 2. `script.js`가 LinkedIn, Instagram, Facebook, X, YouTube, TikTok, GitHub, Naver Blog, Medium 링크를 감지합니다.
-3. SNS 링크가 있으면 일반 `/api/chat` 요청 대신 `/api/extract/sns`로 전송합니다.
+3. SNS 링크가 있으면 일반 `/api/chat` 요청 대신 `/api/inspect/sns`로 전송합니다.
 4. 서버는 세션 쿠키를 검증합니다.
 5. `main.py`가 URL을 플랫폼별로 구분하고 개인/회사/채널/블로그/프로필 유형을 판단합니다.
 6. 서버가 공개 프로필 HTML에 접근할 수 있으면 `og:title`, `twitter:title`, `title`, `description` 메타데이터를 읽습니다.
 7. `박광영 | Facebook`처럼 플랫폼명이 붙은 공개 프로필 제목은 사람 이름만 남기고 연락처 이름 후보로 사용합니다.
-8. 공개 메타데이터 이름과 검색/AI 추출 이름이 충돌하면 잘못된 회사, 직책, 이메일을 저장하지 않습니다.
-9. SNS 링크를 `회사명`, `이름`, `직무`, `직위`, `홈페이지`, `SNS종류`, `SNS대상`, `SNS핸들`, `SNS링크` 필드로 정규화합니다.
-10. 정규화된 데이터는 명함 입력과 같은 `save_extracted_customer` 경로를 사용합니다.
-11. 같은 `tenant_id`, `owner_user_id` 안에 같은 회사명이 있으면 `accounts`는 신규 insert하지 않고 update합니다.
-12. `contacts`에는 매번 새 연락처 행을 insert합니다.
-13. 프론트는 저장 결과를 채팅창, 고객 그리드, 선택 고객 상세 정보에 즉시 반영합니다.
+8. inspect 결과는 플랫폼, 대상 유형, 핸들, 이름 후보, 공개 설명, 후보 fetch URL, 저장 가능 여부를 반환합니다.
+9. 현재 프론트 흐름은 이 단계에서 고객 DB에 저장하지 않습니다.
+10. 기존 `/api/extract/sns` 저장 API는 호환용으로 남겨두며, 후속 저장 판단이 필요할 때 사용합니다.
 
 이름 저장 원칙:
 - 개인/프로필 SNS 링크의 `이름`은 공개 프로필 메타데이터나 프로필 화면 캡처처럼 직접 확인 가능한 근거가 있을 때만 저장합니다.
 - Tavily/Gemini 검색 결과는 브리핑 보강에는 사용할 수 있지만, 사람 이름 확정 근거로 단독 사용하지 않습니다.
 - 공개 메타데이터에서 이름을 확정하지 못하면 `saved=false`, `needs_confirmation=true`로 응답하고 DB에 저장하지 않습니다.
-- 프론트는 `saved=true`인 항목만 고객 그리드와 고객 컨텍스트에 반영합니다.
+- 프론트는 inspect 단계에서 고객 그리드와 고객 컨텍스트에 반영하지 않습니다.
 - 사용자가 SNS 프로필 화면 캡처를 업로드하면 `/api/extract`가 명함이 아니더라도 SNS 프로필 화면 여부를 다시 판단합니다.
 - 화면 캡처에서 보이는 대표 이름이 확인되면 해당 이름을 직접 근거로 고객 저장하고, 보이지 않으면 저장하지 않습니다.
 - LinkedIn 개인 URL slug가 이름 토큰 2개 이상과 숫자 ID suffix로 구성된 형태이면 URL 자체의 직접 근거로 이름 후보를 사용할 수 있습니다.
@@ -892,8 +889,8 @@ uv run python -c "import main; print('app import ok')"
 - LinkedIn URL slug 이름은 실제 화면 표시명과 순서가 다를 수 있으므로, 중요한 고객은 프로필 화면 캡처로 한번 더 확인하는 흐름을 권장합니다.
 
 보강된 LinkedIn 처리:
-- `/api/extract/sns`는 SNS URL 구조 분석 후 Tavily 검색과 Gemini 정리를 사용해 이름, 회사, 직무, 직위, 요약, 영업 브리핑을 보강합니다.
-- 프론트 캐시 문제로 SNS 링크가 `/api/chat`으로 들어와도 서버가 다시 SNS 링크를 감지해 고객 등록 fallback을 수행합니다.
+- `/api/inspect/sns`는 SNS URL 구조와 공개 메타데이터를 분석해 플랫폼, 대상 유형, 이름 후보, 설명을 반환합니다.
+- 프론트 캐시 문제로 SNS 링크가 `/api/chat`으로 들어와도 서버가 다시 SNS 링크를 감지해 고객 저장이 아닌 정보 확인 fallback을 수행합니다.
 - `/` HTML 응답은 `script.js?v=<파일수정시간>` 형태로 내려가므로 최신 SNS 분기 로직이 브라우저에 반영되기 쉽습니다.
 - `script.js`와 `styles.css`는 `Cache-Control: no-cache`를 사용합니다.
 
