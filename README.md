@@ -422,6 +422,20 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 드래그앤드롭 파일 중복 첨부 방지
+
+변경 파일:
+- `script.js`
+- `README.md`
+
+작업 내용:
+- 대화창에 파일을 드래그앤드롭할 때 `chat-panel`, `chat-stream`, `chat-input`의 drop 이벤트가 중첩 처리되어 같은 파일이 두 번 첨부될 수 있는 문제를 보완했습니다.
+- drag/drop 이벤트에서 `stopPropagation()`을 적용해 한 번의 드롭이 한 번만 처리되도록 했습니다.
+- 같은 파일이 다시 들어와도 `name`, `size`, `lastModified` 기준으로 중복 첨부를 건너뛰도록 `addFiles()`에 중복 방지 로직을 추가했습니다.
+
+검증:
+- `node --check script.js`
+
 ### 2026-05-01: 문서 업로드 기반 견적/계약 자동 저장
 
 변경 파일:

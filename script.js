@@ -33,6 +33,10 @@ const memory = {
   selectedCustomer: null,
 };
 
+function pendingFileKey(file) {
+  return [file?.name || "", file?.size || 0, file?.lastModified || 0].join(":");
+}
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -1511,7 +1515,16 @@ function addFiles(files) {
   const nextFiles = Array.from(files ?? []);
   if (!nextFiles.length) return;
 
-  pendingFiles = [...pendingFiles, ...nextFiles];
+  const existing = new Set(pendingFiles.map(pendingFileKey));
+  const uniqueFiles = nextFiles.filter((file) => {
+    const key = pendingFileKey(file);
+    if (existing.has(key)) return false;
+    existing.add(key);
+    return true;
+  });
+  if (!uniqueFiles.length) return;
+
+  pendingFiles = [...pendingFiles, ...uniqueFiles];
   renderAttachmentPreview();
 }
 
@@ -1614,14 +1627,17 @@ logoutButton?.addEventListener("click", logout);
 dropTargets.forEach((target) => {
   target.addEventListener("dragenter", (event) => {
     event.preventDefault();
+    event.stopPropagation();
     chatInput?.classList.add("drag-over");
   });
 
   target.addEventListener("dragover", (event) => {
     event.preventDefault();
+    event.stopPropagation();
   });
 
   target.addEventListener("dragleave", (event) => {
+    event.stopPropagation();
     if (!event.currentTarget.contains(event.relatedTarget)) {
       chatInput?.classList.remove("drag-over");
     }
@@ -1629,6 +1645,7 @@ dropTargets.forEach((target) => {
 
   target.addEventListener("drop", (event) => {
     event.preventDefault();
+    event.stopPropagation();
     chatInput?.classList.remove("drag-over");
     addFiles(event.dataTransfer.files);
   });
