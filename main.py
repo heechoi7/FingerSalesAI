@@ -452,6 +452,25 @@ def write_audit_log(
     )
 
 
+def record_audit_event(
+    session: dict[str, Any] | None,
+    action: str,
+    entity_type: str,
+    entity_id: int | None = None,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+    request: Request | None = None,
+) -> None:
+    if not session:
+        return
+    try:
+        with db_connection() as connection:
+            cursor = connection.cursor()
+            write_audit_log(cursor, session, action, entity_type, entity_id, before, after, request)
+    except Exception as error:
+        print("Audit log write failed:", error)
+
+
 def parse_custom_codes_setting(value: Any) -> dict[str, Any]:
     if value in (None, ""):
         return {"groups": []}
@@ -1743,6 +1762,19 @@ async def login(payload: LoginRequest, response: Response, request: Request):
 
         cursor.execute("UPDATE users SET last_login_at = NOW(6) WHERE id = %s", (row["user_id"],))
         session = public_session(row)
+        try:
+            write_audit_log(
+                cursor,
+                session,
+                "login",
+                "auth",
+                row["user_id"],
+                None,
+                {"email": email, "tenant_code": tenant_code},
+                request,
+            )
+        except Exception as error:
+            print("Audit log write failed:", error)
         set_session_cookie(response, session)
         return {"success": True, "session": {**session, "role_label": role_label(session["role"])}}
 
@@ -1841,13 +1873,17 @@ async def me(request: Request):
 
 
 @app.post("/api/auth/logout")
-async def logout(response: Response):
+async def logout(response: Response, request: Request):
+    session = get_session(request)
+    record_audit_event(session, "logout", "auth", session["user_id"] if session else None, None, {}, request)
     clear_session_cookie(response)
     return {"success": True}
 
 
 @app.get("/logout")
-async def logout_page():
+async def logout_page(request: Request):
+    session = get_session(request)
+    record_audit_event(session, "logout", "auth", session["user_id"] if session else None, None, {}, request)
     response = RedirectResponse("/login.html", status_code=303)
     clear_session_cookie(response)
     return response
@@ -1883,6 +1919,7 @@ async def admin_summary(request: Request):
         _setting_id, codes = fetch_custom_codes(cursor, tenant_id)
         counts["code_groups"] = len(codes["groups"])
         counts["code_items"] = sum(len(group.get("items") or []) for group in codes["groups"])
+    record_audit_event(session, "view", "admin_summary", None, None, {"counts": counts}, request)
     return {
         "success": True,
         "tenant": admin_json_row(tenant or {}),
@@ -1918,6 +1955,7 @@ async def admin_company(request: Request):
             (tenant_id,),
         )
         settings = cursor.fetchall()
+    record_audit_event(session, "view", "tenant", tenant_id, None, {"settings_count": len(settings)}, request)
     return {"success": True, "company": admin_json_row(tenant or {}), "settings": admin_json_rows(settings)}
 
 
@@ -2002,6 +2040,7 @@ async def admin_users(request: Request):
             (session["tenant_id"],),
         )
         users = cursor.fetchall()
+    record_audit_event(session, "list", "user", None, None, {"count": len(users)}, request)
     return {
         "success": True,
         "users": admin_json_rows(users),
@@ -2110,6 +2149,31 @@ async def admin_update_user(user_id: int, payload: AdminUserPayload, request: Re
     return {"success": True, "user": admin_json_row(after)}
 
 
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: int, request: Request):
+    session = require_admin_session(request)
+    if user_id == session["user_id"]:
+        raise HTTPException(status_code=400, detail="You cannot delete your own signed-in user.")
+
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        before = ensure_admin_target_belongs(cursor, "users", user_id, session["tenant_id"])
+        cursor.execute(
+            """
+            UPDATE users
+            SET status = 'disabled',
+                team_id = NULL,
+                deleted_at = NOW(6)
+            WHERE id = %s
+              AND tenant_id = %s
+              AND deleted_at IS NULL
+            """,
+            (user_id, session["tenant_id"]),
+        )
+        write_audit_log(cursor, session, "delete", "user", user_id, before, None, request)
+    return {"success": True}
+
+
 @app.get("/api/admin/teams")
 async def admin_teams(request: Request):
     session = require_admin_session(request)
@@ -2166,6 +2230,7 @@ async def admin_teams(request: Request):
         row["members"] = members_by_team.get(team["id"], [])
         row["member_user_ids"] = [member["id"] for member in row["members"]]
         enriched_teams.append(row)
+    record_audit_event(session, "list", "team", None, None, {"count": len(enriched_teams)}, request)
     return {"success": True, "teams": enriched_teams, "users": admin_json_rows(users)}
 
 
@@ -2310,6 +2375,7 @@ async def admin_roles(request: Request):
         {"value": key, "label": role_label(key), "user_count": counts.get(key, 0), "permissions": permissions.get(key, [])}
         for key in USER_ROLES
     ]
+    record_audit_event(session, "view", "role", None, None, {"count": len(roles)}, request)
     return {"success": True, "roles": roles}
 
 
@@ -2319,6 +2385,15 @@ async def admin_codes(request: Request):
     with db_connection() as connection:
         cursor = connection.cursor(dictionary=True)
         _setting_id, codes = fetch_custom_codes(cursor, session["tenant_id"])
+    record_audit_event(
+        session,
+        "view",
+        "custom_codes",
+        None,
+        None,
+        {"groups": len(codes.get("groups") or [])},
+        request,
+    )
     return {"success": True, "codes": codes}
 
 
@@ -2371,6 +2446,7 @@ async def admin_pipeline_stages(request: Request):
             (session["tenant_id"],),
         )
         stages = cursor.fetchall()
+    record_audit_event(session, "list", "pipeline_stage", None, None, {"count": len(stages)}, request)
     return {"success": True, "stages": admin_json_rows(stages), "stage_codes": sorted(PIPELINE_STAGE_CODES), "default_stages": DEFAULT_PIPELINE_STAGES}
 
 
@@ -2529,6 +2605,7 @@ async def admin_logs(
             (session["tenant_id"], limit),
         )
         logs = cursor.fetchall()
+    record_audit_event(session, "list", "audit_log", None, None, {"count": len(logs), "limit": limit}, request)
     return {"success": True, "logs": admin_json_rows(logs)}
 
 
@@ -2569,6 +2646,20 @@ async def extract_business_card(
                     session["tenant_id"],
                     session["user_id"],
                 )
+                record_audit_event(
+                    session,
+                    "extract",
+                    "business_card",
+                    customer.get("id") if customer else None,
+                    None,
+                    {
+                        "file_name": file.filename or "",
+                        "is_business_card": False,
+                        "is_social_profile": True,
+                        "platform": social_profile.get("platform") or "",
+                    },
+                    request,
+                )
                 return {
                     "success": True,
                     "is_business_card": False,
@@ -2591,13 +2682,8 @@ async def extract_business_card(
                     "social_profile": social_profile,
                 }
 
-        return {
-            "success": True,
-            "is_business_card": result.get("is_business_card", False),
-            "is_social_profile": False,
-            "data": result.get("card_info", {}),
-            "briefing": result.get("company_briefing", ""),
-            "customer": save_extracted_customer(
+        customer = (
+            save_extracted_customer(
                 result.get("card_info", {}),
                 result.get("company_briefing", ""),
                 file.filename or "",
@@ -2605,7 +2691,29 @@ async def extract_business_card(
                 session["user_id"],
             )
             if result.get("is_business_card", False)
-            else None,
+            else None
+        )
+        record_audit_event(
+            session,
+            "extract",
+            "business_card",
+            customer.get("id") if customer else None,
+            None,
+            {
+                "file_name": file.filename or "",
+                "is_business_card": bool(result.get("is_business_card", False)),
+                "is_social_profile": False,
+                "saved": bool(customer),
+            },
+            request,
+        )
+        return {
+            "success": True,
+            "is_business_card": result.get("is_business_card", False),
+            "is_social_profile": False,
+            "data": result.get("card_info", {}),
+            "briefing": result.get("company_briefing", ""),
+            "customer": customer,
         }
     except HTTPException:
         raise
@@ -2627,6 +2735,15 @@ async def extract_sns_links(payload: SnsLinksRequest, request: Request):
         items = [save_sns_customer(link, session["tenant_id"], session["user_id"]) for link in links]
         saved_count = sum(1 for item in items if item.get("saved"))
         pending_count = sum(1 for item in items if item.get("needs_confirmation"))
+        record_audit_event(
+            session,
+            "extract",
+            "sns",
+            None,
+            None,
+            {"link_count": len(links), "saved_count": saved_count, "pending_count": pending_count},
+            request,
+        )
         return {"success": True, "count": saved_count, "pending_count": pending_count, "items": items}
     except HTTPException:
         raise
@@ -2637,7 +2754,7 @@ async def extract_sns_links(payload: SnsLinksRequest, request: Request):
 
 @app.post("/api/inspect/sns")
 async def inspect_sns_links(payload: SnsLinksRequest, request: Request):
-    require_session(request)
+    session = require_session(request)
     links = extract_social_links(payload.message)
     if not links:
         raise HTTPException(status_code=400, detail="지원하는 SNS 링크를 찾지 못했습니다.")
@@ -2646,6 +2763,7 @@ async def inspect_sns_links(payload: SnsLinksRequest, request: Request):
 
     try:
         items = [inspect_social_link(link) for link in links]
+        record_audit_event(session, "inspect", "sns", None, None, {"link_count": len(items)}, request)
         return {"success": True, "count": len(items), "items": items}
     except HTTPException:
         raise
@@ -2719,7 +2837,17 @@ async def list_customers(
     with db_connection() as connection:
         cursor = connection.cursor(dictionary=True)
         cursor.execute(query, (current_tenant_id, current_user_id, search.strip(), keyword, keyword, keyword, keyword, limit))
-        return {"success": True, "customers": [contact_row_to_customer(row) for row in cursor.fetchall()]}
+        customers = [contact_row_to_customer(row) for row in cursor.fetchall()]
+    record_audit_event(
+        session,
+        "list",
+        "customer",
+        None,
+        None,
+        {"count": len(customers), "search": search.strip(), "limit": limit},
+        request,
+    )
+    return {"success": True, "customers": customers}
 
 
 @app.get("/api/customers/{customer_id}")
@@ -2732,7 +2860,9 @@ async def get_customer(customer_id: int, request: Request):
         row = fetch_contact(cursor, customer_id, current_tenant_id, current_user_id)
         if not row:
             raise HTTPException(status_code=404, detail="Customer not found")
-        return {"success": True, "customer": contact_row_to_customer(row)}
+        customer = contact_row_to_customer(row)
+    record_audit_event(session, "view", "customer", customer_id, None, {"customer_id": customer_id}, request)
+    return {"success": True, "customer": customer}
 
 
 @app.post("/api/customers")
@@ -2740,7 +2870,9 @@ async def create_customer(payload: CustomerPayload, request: Request):
     session = require_session(request)
     payload.tenant_id = session["tenant_id"]
     payload.owner_user_id = session["user_id"]
-    return {"success": True, "customer": insert_customer(payload)}
+    customer = insert_customer(payload)
+    record_audit_event(session, "create", "customer", customer.get("id"), None, customer, request)
+    return {"success": True, "customer": customer}
 
 
 @app.put("/api/customers/{customer_id}")
@@ -2748,7 +2880,9 @@ async def update_customer(customer_id: int, payload: CustomerPayload, request: R
     session = require_session(request)
     payload.tenant_id = session["tenant_id"]
     payload.owner_user_id = session["user_id"]
-    return {"success": True, "customer": update_customer_record(customer_id, payload)}
+    customer = update_customer_record(customer_id, payload)
+    record_audit_event(session, "update", "customer", customer_id, None, customer, request)
+    return {"success": True, "customer": customer}
 
 
 @app.delete("/api/customers/{customer_id}")
@@ -2771,7 +2905,8 @@ async def delete_customer(customer_id: int, request: Request):
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Customer not found")
-        return {"success": True}
+    record_audit_event(session, "delete", "customer", customer_id, None, {"customer_id": customer_id}, request)
+    return {"success": True}
 
 
 @app.post("/api/chat")
@@ -2781,12 +2916,37 @@ async def chat(chat_request: ChatRequest, request: Request):
     if not message:
         raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
 
+    selected_customer = (chat_request.context or {}).get("selectedCustomer") if isinstance(chat_request.context, dict) else None
+    selected_customer_id = (
+        selected_customer.get("id") or selected_customer.get("contactId")
+        if isinstance(selected_customer, dict)
+        else None
+    )
+    record_audit_event(
+        session,
+        "ask",
+        "agent",
+        selected_customer_id,
+        None,
+        {"message_preview": message[:300], "selected_customer_id": selected_customer_id},
+        request,
+    )
+
     social_links = extract_social_links(message)
     if social_links:
         if len(social_links) > MAX_SNS_LINKS_PER_REQUEST:
             raise HTTPException(status_code=400, detail=f"SNS 링크는 한 번에 최대 {MAX_SNS_LINKS_PER_REQUEST}개까지 확인할 수 있습니다.")
         try:
             items = [inspect_social_link(link) for link in social_links]
+            record_audit_event(
+                session,
+                "inspect",
+                "sns",
+                selected_customer_id,
+                None,
+                {"link_count": len(items), "source": "chat"},
+                request,
+            )
             return {
                 "success": True,
                 "reply": build_sns_inspect_reply(items),

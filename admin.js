@@ -249,7 +249,10 @@ async function renderUsers() {
           <td><select name="role">${optionHtml(adminState.roles, user.role, "역할")}</select></td>
           <td><select name="status">${optionHtml(adminState.statuses, user.status, "상태")}</select></td>
           <td>${escapeHtml(formatDate(user.last_login_at))}</td>
-          <td><button type="button" data-action="save-user">저장</button></td>
+          <td class="admin-row-actions">
+            <button type="button" data-action="save-user">저장</button>
+            <button type="button" class="ghost danger" data-action="delete-user">삭제</button>
+          </td>
         </tr>
       `
     )
@@ -265,7 +268,7 @@ async function renderUsers() {
     </form>
     <div class="admin-table-wrap">
       <table class="admin-table">
-        <thead><tr><th>이름</th><th>이메일</th><th>전화번호</th><th>팀</th><th>역할</th><th>상태</th><th>마지막 로그인</th><th></th></tr></thead>
+        <thead><tr><th>이름</th><th>이메일</th><th>전화번호</th><th>팀</th><th>역할</th><th>상태</th><th>마지막 로그인</th><th>관리</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="8">등록된 사용자가 없습니다.</td></tr>`}</tbody>
       </table>
     </div>
@@ -312,6 +315,16 @@ async function saveUser(row) {
   const result = await response.json();
   if (!response.ok || !result.success) throw new Error(result.detail || result.error || "사용자 정보를 저장하지 못했습니다.");
   showAdminMessage("사용자 정보를 저장했습니다.", "success");
+  await renderUsers();
+}
+
+async function deleteUser(row) {
+  if (!confirm("사용자를 삭제하고 로그인을 비활성화할까요?")) return;
+  const response = await adminApi(`/api/admin/users/${row.dataset.userId}`, { method: "DELETE" });
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(result.detail || result.error || "사용자를 삭제하지 못했습니다.");
+  showAdminMessage("사용자를 삭제했습니다.", "success");
+  await loadSummary();
   await renderUsers();
 }
 
@@ -953,6 +966,7 @@ adminView.addEventListener("click", async (event) => {
   try {
     const row = event.target.closest("tr");
     if (action === "save-user") await saveUser(row);
+    if (action === "delete-user") await deleteUser(row);
     if (action === "save-team") await saveTeam(row);
     if (action === "delete-team") await deleteTeam(row);
     if (action === "delete-code-group") await deleteCodeGroup(event.target.dataset.codeGroup);

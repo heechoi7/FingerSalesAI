@@ -127,6 +127,16 @@ class SecurityRegressionTests(unittest.TestCase):
     def test_admin_user_audit_select_excludes_password_hash(self):
         self.assertNotIn("password_hash", main.ADMIN_ENTITY_SELECTS["users"])
 
+    def test_record_audit_event_skips_missing_session(self):
+        with patch("main.db_connection") as db_connection:
+            main.record_audit_event(None, "view", "customer")
+
+        db_connection.assert_not_called()
+
+    def test_record_audit_event_does_not_break_user_flow(self):
+        with patch("main.db_connection", side_effect=RuntimeError("audit unavailable")), patch("builtins.print"):
+            main.record_audit_event({"tenant_id": 1, "user_id": 2}, "view", "customer")
+
     def test_custom_code_tokens_are_normalized(self):
         payload = main.AdminCodesPayload(
             groups=[

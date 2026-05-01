@@ -1611,6 +1611,20 @@ progress::-webkit-progress-value {
   margin-left: 4px;
 }
 
+.admin-row-actions {
+  white-space: nowrap;
+}
+
+.admin-row-actions .danger {
+  border-color: rgba(215, 53, 53, 0.4);
+  color: #9f2626;
+}
+
+.admin-row-actions .danger:hover {
+  background: #fff5f5;
+  border-color: rgba(215, 53, 53, 0.7);
+}
+
 .admin-code-groups {
   display: grid;
   gap: 12px;

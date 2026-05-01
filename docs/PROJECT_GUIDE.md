@@ -414,7 +414,7 @@ FSAI_EXTRA_ENV_PATH=
 4. 역할이 `owner`, `admin`이 아니면 `/`로 돌려보냄
 5. 관리자 페이지가 `window.__FSAI_SESSION__`으로 상단 로그인 정보를 표시
 6. 각 메뉴는 `/api/admin/*` API를 호출하고 모든 조회/수정은 현재 세션의 `tenant_id`로 제한
-7. 관리자 변경 작업은 `audit_logs`에 기록
+7. 관리자 변경 작업과 주요 조회는 `audit_logs`에 기록
 
 일반 사용자 화면 처리:
 
@@ -565,11 +565,13 @@ FSAI_EXTRA_ENV_PATH=
   - `GET /api/admin/users`
   - `POST /api/admin/users/invite`
   - `PUT /api/admin/users/{user_id}`
+  - `DELETE /api/admin/users/{user_id}`
   - `users`의 이름, 전화번호, 팀, 역할, 상태를 관리
   - 사용자 초대 시 `invited` 상태 사용자와 임시 비밀번호를 생성
+  - 사용자 삭제는 `status='disabled'`, `team_id=NULL`, `deleted_at=NOW(6)` soft delete로 처리
   - `owner` 역할은 초대 API에서 지정할 수 없음
   - `password_hash`는 API 응답과 감사 로그에 포함하지 않음
-  - 자기 자신의 역할/상태 변경은 서버에서 차단
+  - 자기 자신의 역할/상태 변경과 삭제는 서버에서 차단
 
 - 팀 관리
   - `GET /api/admin/teams`
@@ -610,6 +612,8 @@ FSAI_EXTRA_ENV_PATH=
   - `GET /api/admin/logs`
   - `audit_logs`를 최신순으로 조회
   - 관리자 create/update/delete 작업은 `write_audit_log`를 통해 기록
+  - 로그인/로그아웃, 관리자 조회, 고객 목록/상세/생성/수정/삭제, 명함 인식, SNS 링크 확인, 에이전트 질문은 `record_audit_event()`로 기록
+  - 로그 기록 실패는 실제 업무 API를 실패시키지 않고 서버 콘솔에만 남김
 
 멀티테넌트 원칙:
 

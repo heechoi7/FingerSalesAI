@@ -259,8 +259,8 @@ http://localhost:8000/
   - 현재 로그인 테넌트의 회사 정보 조회/수정
   - `tenants`, `tenant_settings` 테이블 사용
 
-- `GET /api/admin/users`, `PUT /api/admin/users/{user_id}`
-  - 현재 테넌트 사용자 목록 조회 및 이름/전화번호/팀/역할/상태 수정
+- `GET /api/admin/users`, `PUT /api/admin/users/{user_id}`, `DELETE /api/admin/users/{user_id}`
+  - 현재 테넌트 사용자 목록 조회 및 이름/전화번호/팀/역할/상태 수정, 사용자 soft delete
   - 비밀번호 해시는 응답이나 감사 로그에 포함하지 않음
 
 - `POST /api/admin/users/invite`
@@ -288,6 +288,7 @@ http://localhost:8000/
 
 - `GET /api/admin/logs`
   - `audit_logs` 기반 사용로그 조회
+  - 관리자 변경뿐 아니라 로그인/로그아웃, 주요 조회, 고객 CRUD, SNS 확인, 명함 인식, 에이전트 질문도 감사 로그로 기록
 
 고객:
 
@@ -361,6 +362,32 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 관리자 CRUD와 사용로그 보강
+
+변경 파일:
+- `main.py`
+- `admin.js`
+- `styles.css`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 사용자 관리 화면에 삭제 버튼을 추가하고 `DELETE /api/admin/users/{user_id}` API를 구현했습니다.
+- 사용자 삭제는 실제 행 삭제가 아니라 `status='disabled'`, `team_id=NULL`, `deleted_at=NOW(6)` 기반 soft delete로 처리합니다.
+- 본인 계정 삭제는 서버에서 차단해 관리자 세션을 스스로 끊어버리는 실수를 막았습니다.
+- 관리자 조회 화면, 고객 목록/상세/생성/수정/삭제, 명함 인식, SNS 링크 확인, 에이전트 질문, 로그인/로그아웃을 `audit_logs`에 기록하도록 보강했습니다.
+- 사용로그 기록 실패가 실제 사용자 업무 흐름을 중단하지 않도록 `record_audit_event()`는 예외를 흡수하고 서버 콘솔에만 남깁니다.
+- 관리자 사용로그 화면은 기존 `audit_logs` 테이블을 그대로 조회하되, 이제 운영 행동 로그까지 함께 확인할 수 있습니다.
+
+검증:
+- `node --check admin.js` 통과
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py tests/test_security_regressions.py` 통과
+- `uv run python -m unittest discover -s tests` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- FastAPI TestClient로 `finger / james@crm.co.kr` 로그인 후 `/settings/users`, `/settings/teams`, `/settings/pipeline`, `/api/admin/users`, `/api/admin/logs` 응답 확인
 
 ### 2026-05-01: 설정 라우트 기반 관리자 기능 확장
 
