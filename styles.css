@@ -395,6 +395,19 @@ a {
   grid-template-rows: minmax(0, 1fr);
 }
 
+.left-panel.home-mode {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.left-panel.home-mode .customer-list-section {
+  border-radius: 8px 0 0 8px;
+}
+
+.left-panel.home-mode .splitter-left-vertical,
+.left-panel.home-mode .customer-detail-section {
+  display: none;
+}
+
 .chat-panel {
   grid-column: 3;
   display: grid;
@@ -575,6 +588,10 @@ h3 {
   background: var(--surface);
 }
 
+.canvas-area.home-canvas {
+  padding: 0;
+}
+
 .module-view {
   height: 100%;
   min-height: 0;
@@ -582,6 +599,121 @@ h3 {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   overflow: hidden;
+}
+
+.home-view {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  background: var(--surface);
+}
+
+.home-section {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.home-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.home-section-title h2 {
+  margin: 0;
+  color: var(--charcoal);
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.home-section-title span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.home-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: 10px;
+}
+
+.home-metric-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 13px;
+  display: grid;
+  gap: 10px;
+}
+
+.home-metric-card strong {
+  color: var(--charcoal);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.home-metric-card small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.home-metric-periods {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.home-metric-periods span {
+  min-width: 0;
+  border-radius: 7px;
+  background: #f6f8fb;
+  padding: 8px 6px;
+  color: var(--charcoal);
+  font-size: 17px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.home-metric-periods em {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.home-briefing-section {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.home-briefing-text {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 16px 18px;
+  color: var(--charcoal);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.home-briefing-text p {
+  margin: 0 0 12px;
+}
+
+.home-briefing-text p:last-child {
+  margin-bottom: 0;
 }
 
 .module-filter {

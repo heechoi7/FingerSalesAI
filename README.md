@@ -423,6 +423,28 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 로그인 초기 Home 대시보드와 일일 브리핑 저장
+
+변경 파일:
+- `database.py`
+- `main.py`
+- `script.js`
+- `styles.css`
+- `README.md`
+
+변경 내용:
+- 로그인 후 첫 화면과 좌측 상단 로고 클릭 시 표시되는 Home 화면을 추가했습니다. Home은 별도 메뉴 버튼 없이 좌측 패널 전체를 하나의 패널로 사용합니다.
+- Home 상단 섹션에 고객, 파이프라인, 영업활동, 견적, 계약 지표를 일/월/년 기준으로 보여주는 대시보드를 구현했습니다.
+- `daily_briefings` 테이블을 추가해 사용자별/일자별 브리핑을 하루 1회 저장하도록 했습니다.
+- `/api/home` API를 추가해 현재 사용자/테넌트 기준 대시보드 수치와 오늘 브리핑을 반환합니다. 오늘 저장된 브리핑이 없으면 현재 DB 상황을 기반으로 브리핑을 생성해 저장합니다.
+- 브리핑은 최근 고객, 예정 영업활동, 파이프라인 상태와 월간 수치를 바탕으로 텍스트 중심으로 구성했습니다.
+
+검증:
+- `node --check script.js`
+- `.uv-python\cpython-3.11.15-windows-x86_64-none\python.exe -m py_compile main.py database.py`
+- `UV_CACHE_DIR=.uv-cache uv run python -c "import main; print('app import ok')"`
+- `UV_CACHE_DIR=.uv-cache uv run python -m unittest discover -s tests`
+
 ### 2026-05-01: 문서 뷰어 깨진 텍스트 표시 방지
 
 변경 파일:

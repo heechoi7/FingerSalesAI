@@ -6,6 +6,8 @@ const canvasTitle = document.querySelector("#canvas-title");
 const canvasArea = document.querySelector(".canvas-area");
 const menuButtons = document.querySelectorAll(".main-nav button");
 const panelFocusButtons = document.querySelectorAll(".maximize-panel-btn");
+const brandLink = document.querySelector(".brand");
+const leftPanel = document.querySelector(".left-panel");
 const attachButton = document.querySelector(".attach-btn");
 const fileInput = document.querySelector("#chat-file-input");
 const attachmentPreview = document.querySelector(".attachment-preview");
@@ -171,8 +173,12 @@ window.addEventListener("resize", () => {
 
 function activateMainMenu(menu) {
   const target = Array.from(menuButtons).find((button) => button.dataset.menu === menu);
-  if (!target) return;
   menuButtons.forEach((item) => item.classList.remove("active"));
+  if (menu === "home") {
+    canvasTitle.textContent = "Home";
+    return;
+  }
+  if (!target) return;
   target.classList.add("active");
   canvasTitle.textContent = target.dataset.canvasTitle;
 }
@@ -183,6 +189,11 @@ menuButtons.forEach((button) => {
     activateMainMenu(menu);
     loadMenu(menu);
   });
+});
+
+brandLink?.addEventListener("click", (event) => {
+  event.preventDefault();
+  loadMenu("home");
 });
 
 function escapeHtml(value) {
@@ -406,6 +417,79 @@ function formatAmount(amount, currency = "KRW") {
   const number = Number(amount);
   if (Number.isNaN(number)) return String(amount);
   return `${currency || "KRW"} ${number.toLocaleString("ko-KR")}`;
+}
+
+function formatPlainNumber(value) {
+  const number = Number(value || 0);
+  return Number.isNaN(number) ? "0" : number.toLocaleString("ko-KR");
+}
+
+function formatDashboardAmount(value) {
+  const number = Number(value || 0);
+  if (Number.isNaN(number) || number === 0) return "";
+  if (Math.abs(number) >= 100000000) return `${(number / 100000000).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}억`;
+  if (Math.abs(number) >= 10000) return `${(number / 10000).toLocaleString("ko-KR", { maximumFractionDigits: 0 })}만`;
+  return number.toLocaleString("ko-KR");
+}
+
+function setHomeMode(enabled) {
+  leftPanel?.classList.toggle("home-mode", enabled);
+  canvasArea?.classList.toggle("home-canvas", enabled);
+}
+
+function renderHomeView(data) {
+  setHomeMode(true);
+  activateMainMenu("home");
+  if (!canvasArea) return;
+  const metrics = data?.metrics || [];
+  const briefing = String(data?.briefing?.summary_text || "오늘 브리핑을 생성할 데이터가 아직 없습니다.");
+  canvasArea.innerHTML = `
+    <div class="home-view">
+      <section class="home-section home-metrics-section" aria-label="홈 대시보드 수치">
+        <div class="home-section-title">
+          <h2>오늘의 영업 현황</h2>
+          <span>${escapeHtml(data?.date || "")}</span>
+        </div>
+        <div class="home-metric-grid">
+          ${metrics
+            .map((metric) => {
+              const amount = metric.amounts?.month ? `<small>월 금액 ${escapeHtml(formatDashboardAmount(metric.amounts.month))}</small>` : "";
+              return `
+                <article class="home-metric-card">
+                  <strong>${escapeHtml(metric.label)}</strong>
+                  <div class="home-metric-periods">
+                    <span><em>일</em>${escapeHtml(formatPlainNumber(metric.counts?.day))}</span>
+                    <span><em>월</em>${escapeHtml(formatPlainNumber(metric.counts?.month))}</span>
+                    <span><em>년</em>${escapeHtml(formatPlainNumber(metric.counts?.year))}</span>
+                  </div>
+                  ${amount}
+                </article>
+              `;
+            })
+            .join("")}
+        </div>
+      </section>
+      <section class="home-section home-briefing-section" aria-label="일일 브리핑">
+        <div class="home-section-title">
+          <h2>일일 브리핑</h2>
+          <span>${data?.briefing?.generated ? "오늘 새로 생성" : "오늘 저장본"}</span>
+        </div>
+        <div class="home-briefing-text">
+          ${briefing
+            .split(/\n{2,}/)
+            .map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll("\n", "<br />")}</p>`)
+            .join("")}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+async function loadHome() {
+  const response = await apiFetch("/api/home");
+  const result = await response.json();
+  if (!response.ok || !result.success) throw new Error(apiErrorMessage(result, "홈 정보를 불러오지 못했습니다."));
+  renderHomeView(result);
 }
 
 function documentLinkValue(row) {
@@ -912,6 +996,11 @@ async function loadCalendar() {
 
 async function loadMenu(menu) {
   try {
+    if (menu === "home") {
+      await loadHome();
+      return;
+    }
+    setHomeMode(false);
     if (menu === "customers") {
       renderCustomerView();
       await loadCustomers();
@@ -1095,9 +1184,8 @@ function updateCustomerDetail(data, source, customer = null) {
     ["홈페이지", data["홈페이지"] || "-"],
   ];
 
-  customerDetailList.innerHTML = detailRows
-    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
-    .join("");
+  customerDetailList.classList.remove("detail-list-tabbed");
+  customerDetailList.innerHTML = detailRowsHtml(detailRows);
 }
 
 function getConversationContext() {
@@ -1950,7 +2038,7 @@ chatInput?.addEventListener("submit", async (event) => {
 async function initApp() {
   try {
     await loadCurrentSession();
-    await loadMenu("customers");
+    await loadMenu("home");
   } catch (error) {
     addLog("Session", error.message, "error");
   }

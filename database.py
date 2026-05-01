@@ -110,6 +110,27 @@ def ensure_uploaded_documents_table(cursor) -> None:
     )
 
 
+def ensure_daily_briefings_table(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_briefings (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '일일 브리핑 ID',
+            tenant_id BIGINT UNSIGNED NOT NULL COMMENT '테넌트 ID',
+            owner_user_id BIGINT UNSIGNED NOT NULL COMMENT '사용자 ID',
+            briefing_date DATE NOT NULL COMMENT '브리핑 기준일',
+            summary_text LONGTEXT NOT NULL COMMENT '브리핑 본문',
+            metrics_json JSON NULL COMMENT '생성 시점 대시보드 수치',
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '생성 일시',
+            updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '수정 일시',
+            deleted_at DATETIME(6) NULL COMMENT '소프트 삭제 일시',
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_daily_briefings_user_date (tenant_id, owner_user_id, briefing_date),
+            KEY idx_daily_briefings_tenant_user (tenant_id, owner_user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='사용자별 일일 홈 브리핑'
+        """
+    )
+
+
 def init_db() -> None:
     with db_connection() as connection:
         cursor = connection.cursor(dictionary=True)
@@ -126,6 +147,7 @@ def init_db() -> None:
         if missing:
             raise RuntimeError(f"Missing required table(s): {', '.join(sorted(missing))}")
         ensure_uploaded_documents_table(cursor)
+        ensure_daily_briefings_table(cursor)
         ensure_soft_delete_columns(cursor)
 
 

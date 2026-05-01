@@ -4649,6 +4649,279 @@ async def db_health():
         return internal_error_response("DB 상태를 확인할 수 없습니다.", status_code=503, error_code="FSI-DB-CONNECTION", request=None)
 
 
+HOME_METRIC_CONFIG = [
+    {"key": "customers", "label": "고객", "table": "contacts", "alias": "c", "owner": "owner_user_id", "date": "created_at"},
+    {"key": "pipeline", "label": "파이프라인", "table": "opportunities", "alias": "o", "owner": "owner_user_id", "date": "created_at", "amount": "amount"},
+    {"key": "activities", "label": "영업활동", "table": "activities", "alias": "a", "owner": "owner_user_id", "date": "due_at"},
+    {"key": "quotes", "label": "견적", "table": "quotes", "alias": "q", "owner": "owner_user_id", "date": "created_at", "amount": "total_amount"},
+    {"key": "contracts", "label": "계약", "table": "contracts", "alias": "ct", "owner": "owner_user_id", "date": "created_at", "amount": "contract_amount"},
+]
+
+
+def next_month_start(value: date) -> date:
+    return date(value.year + 1, 1, 1) if value.month == 12 else date(value.year, value.month + 1, 1)
+
+
+def home_periods(today: date) -> dict[str, tuple[date, date]]:
+    month_start = date(today.year, today.month, 1)
+    year_start = date(today.year, 1, 1)
+    return {
+        "day": (today, today + timedelta(days=1)),
+        "month": (month_start, next_month_start(month_start)),
+        "year": (year_start, date(today.year + 1, 1, 1)),
+    }
+
+
+def decimal_number(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, Decimal):
+        return float(value)
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def load_home_metrics(cursor, session: dict[str, Any], today: date) -> list[dict[str, Any]]:
+    periods = home_periods(today)
+    metrics: list[dict[str, Any]] = []
+    for config in HOME_METRIC_CONFIG:
+        alias = config["alias"]
+        date_column = f"{alias}.{config['date']}"
+        select_parts = [
+            f"SUM(CASE WHEN {date_column} >= %s AND {date_column} < %s THEN 1 ELSE 0 END) AS day_count",
+            f"SUM(CASE WHEN {date_column} >= %s AND {date_column} < %s THEN 1 ELSE 0 END) AS month_count",
+            f"SUM(CASE WHEN {date_column} >= %s AND {date_column} < %s THEN 1 ELSE 0 END) AS year_count",
+        ]
+        params: list[Any] = [
+            periods["day"][0],
+            periods["day"][1],
+            periods["month"][0],
+            periods["month"][1],
+            periods["year"][0],
+            periods["year"][1],
+        ]
+        if config.get("amount"):
+            amount_column = f"{alias}.{config['amount']}"
+            select_parts.extend(
+                [
+                    f"COALESCE(SUM(CASE WHEN {date_column} >= %s AND {date_column} < %s THEN {amount_column} ELSE 0 END), 0) AS day_amount",
+                    f"COALESCE(SUM(CASE WHEN {date_column} >= %s AND {date_column} < %s THEN {amount_column} ELSE 0 END), 0) AS month_amount",
+                    f"COALESCE(SUM(CASE WHEN {date_column} >= %s AND {date_column} < %s THEN {amount_column} ELSE 0 END), 0) AS year_amount",
+                ]
+            )
+            params.extend(
+                [
+                    periods["day"][0],
+                    periods["day"][1],
+                    periods["month"][0],
+                    periods["month"][1],
+                    periods["year"][0],
+                    periods["year"][1],
+                ]
+            )
+        cursor.execute(
+            f"""
+            SELECT {", ".join(select_parts)}
+            FROM {config["table"]} {alias}
+            WHERE {alias}.tenant_id = %s
+              AND {alias}.{config["owner"]} = %s
+              AND {alias}.deleted_at IS NULL
+            """,
+            (*params, session["tenant_id"], session["user_id"]),
+        )
+        row = cursor.fetchone() or {}
+        metric = {
+            "key": config["key"],
+            "label": config["label"],
+            "counts": {
+                "day": int(row.get("day_count") or 0),
+                "month": int(row.get("month_count") or 0),
+                "year": int(row.get("year_count") or 0),
+            },
+        }
+        if config.get("amount"):
+            metric["amounts"] = {
+                "day": decimal_number(row.get("day_amount")),
+                "month": decimal_number(row.get("month_amount")),
+                "year": decimal_number(row.get("year_amount")),
+            }
+        metrics.append(metric)
+    return metrics
+
+
+def load_home_context(cursor, session: dict[str, Any], today: date) -> dict[str, list[dict[str, Any]]]:
+    cursor.execute(
+        """
+        SELECT c.name AS contact_name, a.name AS company_name, c.created_at
+        FROM contacts c
+        LEFT JOIN accounts a ON a.id = c.account_id AND a.tenant_id = c.tenant_id AND a.deleted_at IS NULL
+        WHERE c.tenant_id = %s
+          AND c.owner_user_id = %s
+          AND c.deleted_at IS NULL
+        ORDER BY c.created_at DESC, c.id DESC
+        LIMIT 5
+        """,
+        (session["tenant_id"], session["user_id"]),
+    )
+    customers = admin_json_rows(cursor.fetchall())
+    cursor.execute(
+        """
+        SELECT o.name, o.status, o.amount, o.currency, o.probability_percent, o.close_date, a.name AS company_name
+        FROM opportunities o
+        LEFT JOIN accounts a ON a.id = o.account_id AND a.tenant_id = o.tenant_id AND a.deleted_at IS NULL
+        WHERE o.tenant_id = %s
+          AND o.owner_user_id = %s
+          AND o.deleted_at IS NULL
+        ORDER BY COALESCE(o.close_date, DATE('2999-12-31')), o.updated_at DESC, o.id DESC
+        LIMIT 5
+        """,
+        (session["tenant_id"], session["user_id"]),
+    )
+    opportunities = admin_json_rows(cursor.fetchall())
+    cursor.execute(
+        """
+        SELECT act.subject, act.status, act.activity_type, act.due_at, ac.name AS company_name, c.name AS contact_name
+        FROM activities act
+        LEFT JOIN accounts ac ON ac.id = act.account_id AND ac.tenant_id = act.tenant_id AND ac.deleted_at IS NULL
+        LEFT JOIN contacts c ON c.id = act.contact_id AND c.tenant_id = act.tenant_id AND c.deleted_at IS NULL
+        WHERE act.tenant_id = %s
+          AND act.owner_user_id = %s
+          AND act.deleted_at IS NULL
+          AND act.due_at >= %s
+        ORDER BY act.due_at, act.id
+        LIMIT 5
+        """,
+        (session["tenant_id"], session["user_id"], today),
+    )
+    activities = admin_json_rows(cursor.fetchall())
+    return {"customers": customers, "opportunities": opportunities, "activities": activities}
+
+
+def metric_by_key(metrics: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    return next((item for item in metrics if item["key"] == key), {"counts": {"day": 0, "month": 0, "year": 0}})
+
+
+def build_daily_briefing(metrics: list[dict[str, Any]], context: dict[str, list[dict[str, Any]]], today: date) -> str:
+    customers = metric_by_key(metrics, "customers")["counts"]
+    pipeline = metric_by_key(metrics, "pipeline")
+    activities = metric_by_key(metrics, "activities")["counts"]
+    quotes = metric_by_key(metrics, "quotes")
+    contracts = metric_by_key(metrics, "contracts")
+    lines = [
+        f"{today.isoformat()} 영업 브리핑입니다.",
+        "",
+        f"오늘은 고객 {customers['day']}건, 파이프라인 {pipeline['counts']['day']}건, 영업활동 {activities['day']}건, 견적 {quotes['counts']['day']}건, 계약 {contracts['counts']['day']}건이 새로 잡혔습니다.",
+        f"이번 달 누적 기준으로는 고객 {customers['month']}건, 파이프라인 {pipeline['counts']['month']}건, 영업활동 {activities['month']}건, 견적 {quotes['counts']['month']}건, 계약 {contracts['counts']['month']}건입니다.",
+    ]
+    if pipeline.get("amounts", {}).get("month") or quotes.get("amounts", {}).get("month") or contracts.get("amounts", {}).get("month"):
+        lines.append(
+            "금액 기준으로는 "
+            f"이번 달 파이프라인 {pipeline.get('amounts', {}).get('month', 0):,.0f}, "
+            f"견적 {quotes.get('amounts', {}).get('month', 0):,.0f}, "
+            f"계약 {contracts.get('amounts', {}).get('month', 0):,.0f} 규모가 기록되어 있습니다."
+        )
+    if context["activities"]:
+        activity = context["activities"][0]
+        lines.append(
+            f"가장 가까운 예정 활동은 {activity.get('due_at') or '-'}의 "
+            f"{activity.get('company_name') or activity.get('contact_name') or '고객 미지정'} / {activity.get('subject') or activity.get('activity_type') or '영업활동'}입니다."
+        )
+    else:
+        lines.append("다가오는 영업활동이 아직 없습니다. 주요 고객에 대한 팔로업 일정을 먼저 잡는 것이 좋습니다.")
+    if context["opportunities"]:
+        opportunity = context["opportunities"][0]
+        lines.append(
+            f"우선 확인할 파이프라인은 {opportunity.get('company_name') or '회사 미지정'}의 "
+            f"{opportunity.get('name') or '영업기회'}입니다. 상태는 {opportunity.get('status') or '-'}이고 종료예정일은 {opportunity.get('close_date') or '-'}입니다."
+        )
+    if context["customers"]:
+        names = ", ".join(
+            f"{item.get('company_name') or '회사 미지정'} {item.get('contact_name') or ''}".strip()
+            for item in context["customers"][:3]
+        )
+        lines.append(f"최근 등록 고객은 {names} 순서입니다. 신규 고객은 다음 행동과 일정까지 연결하면 CRM 입력 부담을 줄일 수 있습니다.")
+    lines.append("오늘의 권장 흐름은 미처리 일정 확인, 종료예정 파이프라인 점검, 신규 견적/계약 문서 확인 순서입니다.")
+    return "\n".join(lines)
+
+
+def get_or_create_daily_briefing(cursor, session: dict[str, Any], today: date, metrics: list[dict[str, Any]], context: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    cursor.execute(
+        """
+        SELECT id, briefing_date, summary_text, created_at, updated_at
+        FROM daily_briefings
+        WHERE tenant_id = %s
+          AND owner_user_id = %s
+          AND briefing_date = %s
+          AND deleted_at IS NULL
+        LIMIT 1
+        """,
+        (session["tenant_id"], session["user_id"], today),
+    )
+    briefing = cursor.fetchone()
+    if briefing:
+        return {**admin_json_row(briefing), "generated": False}
+    summary_text = build_daily_briefing(metrics, context, today)
+    cursor.execute(
+        """
+        INSERT INTO daily_briefings (
+            tenant_id, owner_user_id, briefing_date, summary_text, metrics_json
+        )
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)
+        """,
+        (
+            session["tenant_id"],
+            session["user_id"],
+            today,
+            summary_text,
+            json.dumps({"metrics": metrics, "context": context}, ensure_ascii=False),
+        ),
+    )
+    generated = cursor.rowcount == 1
+    briefing_id = cursor.lastrowid
+    cursor.execute(
+        """
+        SELECT id, briefing_date, summary_text, created_at, updated_at
+        FROM daily_briefings
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (briefing_id,),
+    )
+    stored = cursor.fetchone()
+    if stored:
+        return {**admin_json_row(stored), "generated": generated}
+    return {
+        "id": briefing_id,
+        "briefing_date": today.isoformat(),
+        "summary_text": summary_text,
+        "generated": generated,
+    }
+
+
+@app.get("/api/home")
+async def home_dashboard(request: Request):
+    session = require_session(request)
+    today = app_now().date()
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        metrics = load_home_metrics(cursor, session, today)
+        context = load_home_context(cursor, session, today)
+        briefing = get_or_create_daily_briefing(cursor, session, today, metrics, context)
+    record_audit_event(
+        session,
+        "view",
+        "home",
+        None,
+        None,
+        {"briefing_id": briefing.get("id"), "briefing_generated": briefing.get("generated")},
+        request,
+    )
+    return {"success": True, "date": today.isoformat(), "metrics": metrics, "briefing": briefing, "context": context}
+
+
 @app.get("/api/customers")
 async def list_customers(
     request: Request,
