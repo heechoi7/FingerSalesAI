@@ -935,11 +935,12 @@ h3 {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 10px 12px 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
 }
 
 .right-section-header.compact {
-  padding-bottom: 6px;
+  padding-bottom: 14px;
 }
 
 .agent-stack,
