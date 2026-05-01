@@ -423,6 +423,21 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: favicon 요청 404 로그 제거
+
+변경 파일:
+- `main.py`
+- `README.md`
+
+작업 내용:
+- 브라우저가 자동 요청하는 `/favicon.ico`가 404로 기록되지 않도록 정적 asset 라우트에 `favicon.ico`를 추가했습니다.
+- 별도 아이콘 파일을 만들지 않고 기존 `fingerai_logo.png`를 favicon 응답으로 매핑했습니다.
+- favicon 응답에는 `image/png` 미디어 타입과 1일 캐시 헤더를 지정했습니다.
+
+검증:
+- `.venv\Scripts\python.exe -m py_compile main.py`
+- `.venv\Scripts\python.exe -c "import main; print('app import ok')"`
+
 ### 2026-05-01: 에이전트 화면 리스트 DB 조회 명령 추가
 
 변경 파일:

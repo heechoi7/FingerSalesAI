@@ -5663,18 +5663,21 @@ async def asset(asset_name: str):
         "admin.js",
         "login.html",
         "admin.html",
+        "favicon.ico",
         "fingersales_logo.png",
         "fingerai_logo.png",
     }
     if asset_name not in allowed_assets:
         raise HTTPException(status_code=404, detail="Not found")
 
-    path = BASE_DIR / asset_name
+    path = BASE_DIR / ("fingerai_logo.png" if asset_name == "favicon.ico" else asset_name)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Not found")
-    response = FileResponse(path)
+    response = FileResponse(path, media_type="image/png" if asset_name == "favicon.ico" else None)
     if asset_name in {"script.js", "admin.js", "styles.css"}:
         response.headers["Cache-Control"] = "no-cache"
+    if asset_name == "favicon.ico":
+        response.headers["Cache-Control"] = "public, max-age=86400"
     return response
 
 
