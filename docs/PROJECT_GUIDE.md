@@ -381,6 +381,39 @@ FSAI_EXTRA_ENV_PATH=
 3. 서버가 `fsai_session` 쿠키를 만료
 4. 서버가 `/login.html`로 redirect
 
+### 3.4 관리자 도구
+
+우측 상단 도구 아이콘은 `/admin` 별도 관리자 페이지로 이동합니다.
+
+접근 권한:
+
+- `owner`
+- `admin`
+
+관리자 페이지 메뉴:
+
+- 회사 정보
+- 사용자 관리
+- 팀 관리
+- 권한 관리
+- 영업 단계 설정
+- 사용로그
+
+처리 흐름:
+
+1. 사용자가 우측 상단 도구 아이콘 클릭
+2. 브라우저가 `/admin`으로 이동
+3. 서버가 세션 쿠키와 현재 사용자/테넌트 상태를 다시 확인
+4. 역할이 `owner`, `admin`이 아니면 `/`로 돌려보냄
+5. 관리자 페이지가 `window.__FSAI_SESSION__`으로 상단 로그인 정보를 표시
+6. 각 메뉴는 `/api/admin/*` API를 호출하고 모든 조회/수정은 현재 세션의 `tenant_id`로 제한
+7. 관리자 변경 작업은 `audit_logs`에 기록
+
+일반 사용자 화면 처리:
+
+- `script.js`는 로그인 세션 역할이 `owner`, `admin`이 아니면 우측 상단 도구 버튼을 숨깁니다.
+- 버튼 표시 여부와 무관하게 `/admin` 라우트와 `/api/admin/*` API는 서버에서 권한을 다시 검증합니다.
+
 ## 4. 각 메뉴별 설명 및 상세 로직
 
 ### 4.1 고객 메뉴
@@ -498,6 +531,66 @@ FSAI_EXTRA_ENV_PATH=
 - 계약 상태
 - 계약 금액
 - 고객사/담당자 연결
+
+### 4.7 관리자 페이지
+
+목적:
+
+- 클라우드형 멀티테넌트 운영에 필요한 테넌트 단위 관리 기능을 제공합니다.
+- CRM 본 화면과 분리된 `/admin` 화면에서 관리자 작업을 수행합니다.
+
+구현 파일:
+
+- `admin.html`: 관리자 레이아웃, 상단 바, 사이드 메뉴, 콘텐츠 영역
+- `admin.js`: 메뉴 전환, API 호출, 테이블/폼 렌더링, 저장/삭제 이벤트
+- `styles.css`: 관리자 화면 레이아웃과 테이블/폼 스타일
+- `main.py`: `/admin` 라우트와 `/api/admin/*` API
+
+메뉴별 상세:
+
+- 회사 정보
+  - `GET /api/admin/company`
+  - `PUT /api/admin/company`
+  - `tenants`의 회사명, 사업자등록번호, 요금제 코드, 시간대, 로케일을 관리
+  - `tenant_settings`는 현재 조회용으로 표시
+
+- 사용자 관리
+  - `GET /api/admin/users`
+  - `PUT /api/admin/users/{user_id}`
+  - `users`의 이름, 전화번호, 팀, 역할, 상태를 관리
+  - `password_hash`는 API 응답과 감사 로그에 포함하지 않음
+  - 자기 자신의 역할/상태 변경은 서버에서 차단
+
+- 팀 관리
+  - `GET /api/admin/teams`
+  - `POST /api/admin/teams`
+  - `PUT /api/admin/teams/{team_id}`
+  - `DELETE /api/admin/teams/{team_id}`
+  - `teams`를 기준으로 팀 추가/수정/soft delete 수행
+  - 팀 삭제 시 해당 팀 소속 사용자의 `team_id`를 `NULL`로 변경
+
+- 권한 관리
+  - `GET /api/admin/roles`
+  - 별도 권한 테이블이 아직 없으므로 `users.role` enum과 서버의 `USER_ROLES` 정의를 기준으로 표시
+  - 추후 RBAC 테이블이 추가되면 이 API의 내부 조회 로직을 교체
+
+- 영업 단계 설정
+  - `GET /api/admin/pipeline-stages`
+  - `POST /api/admin/pipeline-stages`
+  - `PUT /api/admin/pipeline-stages/{stage_id}`
+  - `DELETE /api/admin/pipeline-stages/{stage_id}`
+  - `pipeline_stages`를 기준으로 단계 코드, 이름, 설명, 기본 성공 확률, 정렬, 활성 여부를 관리
+
+- 사용로그
+  - `GET /api/admin/logs`
+  - `audit_logs`를 최신순으로 조회
+  - 관리자 create/update/delete 작업은 `write_audit_log`를 통해 기록
+
+멀티테넌트 원칙:
+
+- 모든 관리자 API는 `require_admin_session(request)`를 먼저 통과해야 합니다.
+- 모든 조회/수정 SQL은 세션의 `tenant_id`를 조건으로 사용합니다.
+- 다른 테넌트의 `users`, `teams`, `pipeline_stages`, `audit_logs`는 조회/수정할 수 없습니다.
 
 ## 5. 공통 코드 및 관리 형태
 
@@ -659,12 +752,15 @@ sales
 viewer
 ```
 
-현재 역할별 API 권한 차등은 아직 세분화되어 있지 않습니다.
+현재 역할별 API 권한 차등은 고객 업무 API와 관리자 API를 우선 분리한 상태입니다.
 
 현재 적용된 범위 제한:
 
 - 모든 고객 조회/수정/삭제는 `tenant_id`와 `owner_user_id` 기준으로 제한
 - 즉 같은 테넌트라도 다른 사용자의 연락처는 보이지 않음
+- 관리자 API(`/api/admin/*`)와 `/admin` 화면은 `owner`, `admin` 역할만 접근 가능
+- 관리자 API도 항상 세션의 `tenant_id`를 SQL 조건에 포함
+- 사용자 관리 응답과 감사 로그에는 `password_hash`를 포함하지 않음
 
 추후 필요:
 

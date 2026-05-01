@@ -15,6 +15,7 @@ const customerDetailList = document.querySelector("#customer-detail-list");
 const customerDetailTitle = document.querySelector("#customer-detail-title");
 const sessionUserLabel = document.querySelector("#session-user-label");
 const logoutButton = document.querySelector("#logout-button");
+const adminLink = document.querySelector("#admin-link");
 const dropTargets = [document.querySelector(".chat-panel"), document.querySelector(".chat-input"), chatStream].filter(Boolean);
 
 let dragState = null;
@@ -184,6 +185,9 @@ function updateSessionHeader(session) {
   const tenantText = session.tenant_name || session.tenant_code || "테넌트";
   const userText = session.user_name || session.email || "사용자";
   sessionUserLabel.innerHTML = `${escapeHtml(tenantText)} <span>/ ${escapeHtml(userText)} / ${escapeHtml(roleText)}</span>`;
+  if (adminLink) {
+    adminLink.hidden = !["owner", "admin"].includes(session.role);
+  }
 }
 
 async function loadCurrentSession() {

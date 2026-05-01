@@ -117,6 +117,16 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(item["name_confidence"], "high")
         self.assertFalse(item["saved"])
 
+    def test_admin_session_requires_admin_role(self):
+        with patch("main.require_session", return_value={"role": "sales"}):
+            with self.assertRaises(main.HTTPException) as raised:
+                main.require_admin_session(object())
+
+        self.assertEqual(raised.exception.status_code, 403)
+
+    def test_admin_user_audit_select_excludes_password_hash(self):
+        self.assertNotIn("password_hash", main.ADMIN_ENTITY_SELECTS["users"])
+
 
 if __name__ == "__main__":
     unittest.main()

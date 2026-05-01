@@ -243,6 +243,35 @@ http://localhost:8000/
 - `GET /logout`
   - 세션 쿠키 삭제 후 `/login.html`로 리다이렉트
 
+관리자:
+
+- `/admin`
+  - 우측 상단 도구 버튼에서 진입하는 별도 관리자 페이지
+  - `owner`, `admin` 역할만 접근 가능
+
+- `GET /api/admin/summary`
+  - 관리자 홈 요약, 테넌트 정보, 사용자/팀/영업 단계/감사 로그 수 반환
+
+- `GET /api/admin/company`, `PUT /api/admin/company`
+  - 현재 로그인 테넌트의 회사 정보 조회/수정
+  - `tenants`, `tenant_settings` 테이블 사용
+
+- `GET /api/admin/users`, `PUT /api/admin/users/{user_id}`
+  - 현재 테넌트 사용자 목록 조회 및 이름/전화번호/팀/역할/상태 수정
+  - 비밀번호 해시는 응답이나 감사 로그에 포함하지 않음
+
+- `GET /api/admin/teams`, `POST /api/admin/teams`, `PUT /api/admin/teams/{team_id}`, `DELETE /api/admin/teams/{team_id}`
+  - 팀 목록 조회, 추가, 수정, soft delete
+
+- `GET /api/admin/roles`
+  - 현재 `users.role` enum과 서버 역할 정의 기준의 권한 설명 반환
+
+- `GET /api/admin/pipeline-stages`, `POST /api/admin/pipeline-stages`, `PUT /api/admin/pipeline-stages/{stage_id}`, `DELETE /api/admin/pipeline-stages/{stage_id}`
+  - `pipeline_stages` 기반 영업 단계 조회/추가/수정/soft delete
+
+- `GET /api/admin/logs`
+  - `audit_logs` 기반 사용로그 조회
+
 고객:
 
 - `GET /api/customers`
@@ -315,6 +344,42 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 ```
 
 ## 변경 이력
+
+### 2026-05-01: 관리자 페이지 및 관리 API 추가
+
+변경 파일:
+- `main.py`
+- `index.html`
+- `admin.html`
+- `admin.js`
+- `script.js`
+- `styles.css`
+- `tests/test_security_regressions.py`
+- `README.md`
+- `docs/PROJECT_GUIDE.md`
+
+작업 내용:
+- 우측 상단 도구 버튼을 `/admin` 관리자 페이지로 연결했습니다.
+- `/admin`은 별도 관리자 화면이며 `owner`, `admin` 역할만 접근할 수 있습니다.
+- 일반 사용자에게는 상단 도구 버튼을 숨기고, 서버 라우트/API에서도 관리자 권한을 다시 확인합니다.
+- 관리자 사이드 메뉴를 `회사 정보`, `사용자 관리`, `팀 관리`, `권한 관리`, `영업 단계 설정`, `사용로그`로 구성했습니다.
+- 회사 정보는 `tenants`, `tenant_settings`를 조회하고 `tenants` 기본 정보를 수정합니다.
+- 사용자 관리는 `users`와 `teams`를 기준으로 사용자 이름, 전화번호, 팀, 역할, 상태를 수정합니다.
+- 사용자 조회/감사 로그에는 `password_hash`를 포함하지 않도록 제한했습니다.
+- 팀 관리는 `teams` 기준 목록, 추가, 수정, soft delete를 지원합니다.
+- 권한 관리는 현재 `users.role` enum과 서버 역할 정의를 기준으로 역할별 설명과 사용자 수를 보여줍니다.
+- 영업 단계 설정은 `pipeline_stages` 기준 목록, 추가, 수정, soft delete를 지원합니다.
+- 사용로그는 `audit_logs` 기준으로 관리자 변경 이력을 조회합니다.
+- 관리자 변경 작업은 `audit_logs`에 create/update/delete 행위로 기록합니다.
+
+검증:
+- `node --check admin.js` 통과
+- `node --check script.js` 통과
+- `uv run python -m py_compile main.py database.py graph.py tests/test_security_regressions.py` 통과
+- `uv run python -m unittest discover -s tests` 통과
+- `uv run python -c "import main; print('app import ok')"` 통과
+- FastAPI TestClient로 `finger / james@crm.co.kr` 로그인 후 `/api/admin/summary`, `/api/admin/users` 응답 확인
+- FastAPI TestClient로 `/admin`, `/admin.js`, `/styles.css` 응답 확인
 
 ### 2026-04-30: MySQL 연결 및 고객 CRUD 1차 구현
 

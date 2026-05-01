@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FingerSalesAI 관리자</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="admin-page">
+    <div class="admin-shell">
+      <header class="admin-topbar">
+        <a class="brand" href="/" aria-label="FingerSalesAI">
+          <img src="/fingersales_logo.png" alt="FingerSalesAI" />
+        </a>
+        <div class="admin-title">
+          <h1>관리자</h1>
+          <p id="admin-session-label">로그인 정보를 확인 중입니다.</p>
+        </div>
+        <div class="admin-top-actions">
+          <a class="admin-outline-button" href="/">CRM</a>
+          <a class="titlebar-action" href="/logout" aria-label="로그아웃" title="로그아웃">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-3" />
+              <path d="M9 12h12" />
+              <path d="m17 8 4 4-4 4" />
+            </svg>
+          </a>
+        </div>
+      </header>
+
+      <main class="admin-workspace">
+        <aside class="admin-sidebar" aria-label="관리자 메뉴">
+          <button type="button" class="active" data-admin-menu="company">회사 정보</button>
+          <button type="button" data-admin-menu="users">사용자 관리</button>
+          <button type="button" data-admin-menu="teams">팀 관리</button>
+          <button type="button" data-admin-menu="roles">권한 관리</button>
+          <button type="button" data-admin-menu="stages">영업 단계 설정</button>
+          <button type="button" data-admin-menu="logs">사용로그</button>
+        </aside>
+
+        <section class="admin-content" aria-live="polite">
+          <div class="admin-content-header">
+            <div>
+              <h2 id="admin-page-title">회사 정보</h2>
+              <p id="admin-page-description">현재 로그인한 테넌트의 기본 정보를 관리합니다.</p>
+            </div>
+            <button class="admin-refresh-button" type="button" id="admin-refresh-button">새로고침</button>
+          </div>
+
+          <div class="admin-summary-grid" id="admin-summary-grid"></div>
+          <div class="admin-message" id="admin-message" hidden></div>
+          <div class="admin-view" id="admin-view"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>

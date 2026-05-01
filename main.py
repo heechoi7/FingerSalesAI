@@ -1,5 +1,6 @@
 from pathlib import Path
 import base64
+from decimal import Decimal
 import hashlib
 import hmac
 import html as html_lib
@@ -54,6 +55,15 @@ MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SNS_LINKS_PER_REQUEST = int(os.getenv("MAX_SNS_LINKS_PER_REQUEST", "3"))
 SOCIAL_FETCH_TIMEOUT_SECONDS = float(os.getenv("SOCIAL_FETCH_TIMEOUT_SECONDS", "3"))
 _auth_attempts: dict[str, list[float]] = {}
+ADMIN_ROLES = {"owner", "admin"}
+USER_STATUS_VALUES = {"active", "invited", "locked", "disabled"}
+TENANT_STATUS_VALUES = {"active", "trial", "suspended", "closed"}
+PIPELINE_STAGE_CODES = {"lead", "prospect", "opportunity", "proposal", "contract", "success"}
+ADMIN_ENTITY_SELECTS = {
+    "users": "id, tenant_id, team_id, email, name, phone, role, status, last_login_at, created_at, updated_at, deleted_at",
+    "teams": "id, tenant_id, parent_team_id, name, description, sort_order, created_at, updated_at, deleted_at",
+    "pipeline_stages": "id, tenant_id, stage_code, name, description, probability_percent, sort_order, is_active, created_at, updated_at, deleted_at",
+}
 
 if IS_PRODUCTION and len(SESSION_SECRET) < 32:
     raise RuntimeError("APP_SESSION_SECRET must be set to at least 32 characters in production.")
@@ -161,6 +171,38 @@ class CustomerPayload(BaseModel):
     card_data: dict[str, Any] | None = None
     briefing: str = ""
     source_file: str = ""
+
+
+class AdminCompanyPayload(BaseModel):
+    name: str = ""
+    business_no: str = ""
+    plan_code: str = ""
+    timezone: str = "Asia/Seoul"
+    locale: str = "ko-KR"
+
+
+class AdminUserPayload(BaseModel):
+    name: str = ""
+    phone: str = ""
+    role: str = "sales"
+    status: str = "active"
+    team_id: int | None = None
+
+
+class AdminTeamPayload(BaseModel):
+    name: str = ""
+    description: str = ""
+    parent_team_id: int | None = None
+    sort_order: int = 0
+
+
+class AdminPipelineStagePayload(BaseModel):
+    stage_code: str = "lead"
+    name: str = ""
+    description: str = ""
+    probability_percent: float = 0
+    sort_order: int = 0
+    is_active: bool = True
 
 
 @app.on_event("startup")
@@ -285,6 +327,87 @@ def require_session(request: Request) -> dict[str, Any]:
     if not session:
         raise HTTPException(status_code=401, detail="Login required")
     return session
+
+
+def require_admin_session(request: Request) -> dict[str, Any]:
+    session = require_session(request)
+    if session.get("role") not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
+    return session
+
+
+def admin_json_value(value: Any) -> Any:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def admin_json_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: admin_json_value(value) for key, value in row.items()}
+
+
+def admin_json_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [admin_json_row(row) for row in rows]
+
+
+def ensure_admin_target_belongs(cursor, table: str, entity_id: int, tenant_id: int) -> dict[str, Any]:
+    columns = ADMIN_ENTITY_SELECTS.get(table)
+    if not columns:
+        raise HTTPException(status_code=500, detail="관리자 대상 테이블 정의가 없습니다.")
+    cursor.execute(
+        f"""
+        SELECT {columns}
+        FROM {table}
+        WHERE id = %s
+          AND tenant_id = %s
+          AND deleted_at IS NULL
+        LIMIT 1
+        """,
+        (entity_id, tenant_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="대상을 찾지 못했습니다.")
+    return row
+
+
+def write_audit_log(
+    cursor,
+    session: dict[str, Any],
+    action: str,
+    entity_type: str,
+    entity_id: int | None,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    request: Request | None = None,
+) -> None:
+    user_agent = request.headers.get("user-agent", "")[:255] if request else ""
+    ip_address = client_ip(request)[:45] if request else ""
+    cursor.execute(
+        """
+        INSERT INTO audit_logs (
+            tenant_id, actor_user_id, action, entity_type, entity_id,
+            request_id, ip_address, user_agent, before_json, after_json
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            session["tenant_id"],
+            session["user_id"],
+            action,
+            entity_type,
+            entity_id,
+            "",
+            ip_address,
+            user_agent,
+            json.dumps(admin_json_row(before or {}), ensure_ascii=False),
+            json.dumps(admin_json_row(after or {}), ensure_ascii=False),
+        ),
+    )
 
 
 def internal_error_response(message: str = "요청 처리 중 오류가 발생했습니다.", status_code: int = 500) -> JSONResponse:
@@ -1499,6 +1622,469 @@ async def logout_page():
     return response
 
 
+@app.get("/api/admin/summary")
+async def admin_summary(request: Request):
+    session = require_admin_session(request)
+    tenant_id = session["tenant_id"]
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT id, tenant_code, name, business_no, plan_code, status, timezone, locale, created_at, updated_at
+            FROM tenants
+            WHERE id = %s
+              AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            (tenant_id,),
+        )
+        tenant = cursor.fetchone()
+        counts = {}
+        for key, table in (
+            ("users", "users"),
+            ("teams", "teams"),
+            ("pipeline_stages", "pipeline_stages"),
+            ("audit_logs", "audit_logs"),
+        ):
+            deleted_filter = "" if table == "audit_logs" else "AND deleted_at IS NULL"
+            cursor.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE tenant_id = %s {deleted_filter}", (tenant_id,))
+            counts[key] = cursor.fetchone()["count"]
+    return {
+        "success": True,
+        "tenant": admin_json_row(tenant or {}),
+        "counts": counts,
+        "session": {**session, "role_label": role_label(session["role"])},
+    }
+
+
+@app.get("/api/admin/company")
+async def admin_company(request: Request):
+    session = require_admin_session(request)
+    tenant_id = session["tenant_id"]
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT id, tenant_code, name, business_no, plan_code, status, timezone, locale, created_at, updated_at
+            FROM tenants
+            WHERE id = %s
+              AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            (tenant_id,),
+        )
+        tenant = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT id, setting_key, setting_value, description, created_at, updated_at
+            FROM tenant_settings
+            WHERE tenant_id = %s
+            ORDER BY setting_key
+            """,
+            (tenant_id,),
+        )
+        settings = cursor.fetchall()
+    return {"success": True, "company": admin_json_row(tenant or {}), "settings": admin_json_rows(settings)}
+
+
+@app.put("/api/admin/company")
+async def admin_update_company(payload: AdminCompanyPayload, request: Request):
+    session = require_admin_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT id, tenant_code, name, business_no, plan_code, status, timezone, locale, created_at, updated_at
+            FROM tenants
+            WHERE id = %s
+              AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            (session["tenant_id"],),
+        )
+        before = cursor.fetchone()
+        if not before:
+            raise HTTPException(status_code=404, detail="회사 정보를 찾지 못했습니다.")
+        after_values = {
+            "name": payload.name.strip() or before["name"],
+            "business_no": none_if_blank(payload.business_no),
+            "plan_code": none_if_blank(payload.plan_code),
+            "timezone": payload.timezone.strip() or "Asia/Seoul",
+            "locale": payload.locale.strip() or "ko-KR",
+        }
+        cursor.execute(
+            """
+            UPDATE tenants
+            SET name = %s,
+                business_no = %s,
+                plan_code = %s,
+                timezone = %s,
+                locale = %s
+            WHERE id = %s
+              AND deleted_at IS NULL
+            """,
+            (
+                after_values["name"],
+                after_values["business_no"],
+                after_values["plan_code"],
+                after_values["timezone"],
+                after_values["locale"],
+                session["tenant_id"],
+            ),
+        )
+        cursor.execute(
+            """
+            SELECT id, tenant_code, name, business_no, plan_code, status, timezone, locale, created_at, updated_at
+            FROM tenants
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (session["tenant_id"],),
+        )
+        after = cursor.fetchone()
+        write_audit_log(cursor, session, "update", "tenant", session["tenant_id"], before, after, request)
+    return {"success": True, "company": admin_json_row(after)}
+
+
+@app.get("/api/admin/users")
+async def admin_users(request: Request):
+    session = require_admin_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                u.id, u.email, u.name, u.phone, u.role, u.status, u.team_id,
+                t.name AS team_name, u.last_login_at, u.created_at, u.updated_at
+            FROM users u
+            LEFT JOIN teams t
+                   ON t.id = u.team_id
+                  AND t.tenant_id = u.tenant_id
+                  AND t.deleted_at IS NULL
+            WHERE u.tenant_id = %s
+              AND u.deleted_at IS NULL
+            ORDER BY u.created_at DESC, u.id DESC
+            """,
+            (session["tenant_id"],),
+        )
+        users = cursor.fetchall()
+    return {
+        "success": True,
+        "users": admin_json_rows(users),
+        "roles": [{"value": key, "label": role_label(key)} for key in USER_ROLES],
+        "statuses": sorted(USER_STATUS_VALUES),
+    }
+
+
+@app.put("/api/admin/users/{user_id}")
+async def admin_update_user(user_id: int, payload: AdminUserPayload, request: Request):
+    session = require_admin_session(request)
+    if payload.role not in USER_ROLES:
+        raise HTTPException(status_code=400, detail="사용자 역할을 확인해 주세요.")
+    if payload.status not in USER_STATUS_VALUES:
+        raise HTTPException(status_code=400, detail="사용자 상태를 확인해 주세요.")
+
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        before = ensure_admin_target_belongs(cursor, "users", user_id, session["tenant_id"])
+        if user_id == session["user_id"] and (payload.role != before["role"] or payload.status != before["status"]):
+            raise HTTPException(status_code=400, detail="본인의 역할이나 상태는 직접 변경할 수 없습니다.")
+        if payload.team_id is not None:
+            ensure_admin_target_belongs(cursor, "teams", payload.team_id, session["tenant_id"])
+        cursor.execute(
+            """
+            UPDATE users
+            SET name = %s,
+                phone = %s,
+                role = %s,
+                status = %s,
+                team_id = %s
+            WHERE id = %s
+              AND tenant_id = %s
+              AND deleted_at IS NULL
+            """,
+            (
+                payload.name.strip() or before["name"],
+                none_if_blank(payload.phone),
+                payload.role,
+                payload.status,
+                payload.team_id,
+                user_id,
+                session["tenant_id"],
+            ),
+        )
+        cursor.execute(
+            "SELECT id, email, name, phone, role, status, team_id, last_login_at, created_at, updated_at FROM users WHERE id = %s",
+            (user_id,),
+        )
+        after = cursor.fetchone()
+        write_audit_log(cursor, session, "update", "user", user_id, before, after, request)
+    return {"success": True, "user": admin_json_row(after)}
+
+
+@app.get("/api/admin/teams")
+async def admin_teams(request: Request):
+    session = require_admin_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                t.id, t.parent_team_id, p.name AS parent_team_name, t.name, t.description,
+                t.sort_order, COUNT(u.id) AS member_count, t.created_at, t.updated_at
+            FROM teams t
+            LEFT JOIN teams p
+                   ON p.id = t.parent_team_id
+                  AND p.tenant_id = t.tenant_id
+                  AND p.deleted_at IS NULL
+            LEFT JOIN users u
+                   ON u.team_id = t.id
+                  AND u.tenant_id = t.tenant_id
+                  AND u.deleted_at IS NULL
+            WHERE t.tenant_id = %s
+              AND t.deleted_at IS NULL
+            GROUP BY t.id, t.parent_team_id, p.name, t.name, t.description, t.sort_order, t.created_at, t.updated_at
+            ORDER BY t.sort_order, t.name
+            """,
+            (session["tenant_id"],),
+        )
+        teams = cursor.fetchall()
+    return {"success": True, "teams": admin_json_rows(teams)}
+
+
+@app.post("/api/admin/teams")
+async def admin_create_team(payload: AdminTeamPayload, request: Request):
+    session = require_admin_session(request)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="팀 이름을 입력해 주세요.")
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        if payload.parent_team_id is not None:
+            ensure_admin_target_belongs(cursor, "teams", payload.parent_team_id, session["tenant_id"])
+        cursor.execute(
+            """
+            INSERT INTO teams (tenant_id, parent_team_id, name, description, sort_order)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (session["tenant_id"], payload.parent_team_id, name, none_if_blank(payload.description), payload.sort_order),
+        )
+        team_id = cursor.lastrowid
+        after = ensure_admin_target_belongs(cursor, "teams", team_id, session["tenant_id"])
+        write_audit_log(cursor, session, "create", "team", team_id, None, after, request)
+    return {"success": True, "team": admin_json_row(after)}
+
+
+@app.put("/api/admin/teams/{team_id}")
+async def admin_update_team(team_id: int, payload: AdminTeamPayload, request: Request):
+    session = require_admin_session(request)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="팀 이름을 입력해 주세요.")
+    if payload.parent_team_id == team_id:
+        raise HTTPException(status_code=400, detail="자기 자신을 상위 팀으로 지정할 수 없습니다.")
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        before = ensure_admin_target_belongs(cursor, "teams", team_id, session["tenant_id"])
+        if payload.parent_team_id is not None:
+            ensure_admin_target_belongs(cursor, "teams", payload.parent_team_id, session["tenant_id"])
+        cursor.execute(
+            """
+            UPDATE teams
+            SET parent_team_id = %s,
+                name = %s,
+                description = %s,
+                sort_order = %s
+            WHERE id = %s
+              AND tenant_id = %s
+              AND deleted_at IS NULL
+            """,
+            (payload.parent_team_id, name, none_if_blank(payload.description), payload.sort_order, team_id, session["tenant_id"]),
+        )
+        after = ensure_admin_target_belongs(cursor, "teams", team_id, session["tenant_id"])
+        write_audit_log(cursor, session, "update", "team", team_id, before, after, request)
+    return {"success": True, "team": admin_json_row(after)}
+
+
+@app.delete("/api/admin/teams/{team_id}")
+async def admin_delete_team(team_id: int, request: Request):
+    session = require_admin_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        before = ensure_admin_target_belongs(cursor, "teams", team_id, session["tenant_id"])
+        cursor.execute("UPDATE users SET team_id = NULL WHERE tenant_id = %s AND team_id = %s", (session["tenant_id"], team_id))
+        cursor.execute(
+            "UPDATE teams SET deleted_at = NOW(6) WHERE id = %s AND tenant_id = %s AND deleted_at IS NULL",
+            (team_id, session["tenant_id"]),
+        )
+        write_audit_log(cursor, session, "delete", "team", team_id, before, None, request)
+    return {"success": True}
+
+
+@app.get("/api/admin/roles")
+async def admin_roles(request: Request):
+    session = require_admin_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT role, COUNT(*) AS user_count
+            FROM users
+            WHERE tenant_id = %s
+              AND deleted_at IS NULL
+            GROUP BY role
+            """,
+            (session["tenant_id"],),
+        )
+        counts = {row["role"]: row["user_count"] for row in cursor.fetchall()}
+    permissions = {
+        "owner": ["회사 정보 관리", "사용자/팀 관리", "권한 확인", "영업 단계 설정", "사용로그 조회"],
+        "admin": ["회사 정보 관리", "사용자/팀 관리", "권한 확인", "영업 단계 설정", "사용로그 조회"],
+        "manager": ["팀 고객/영업 업무 관리", "영업 단계 조회"],
+        "sales": ["본인 고객/영업 업무 관리"],
+        "viewer": ["조회 전용"],
+    }
+    roles = [
+        {"value": key, "label": role_label(key), "user_count": counts.get(key, 0), "permissions": permissions.get(key, [])}
+        for key in USER_ROLES
+    ]
+    return {"success": True, "roles": roles}
+
+
+@app.get("/api/admin/pipeline-stages")
+async def admin_pipeline_stages(request: Request):
+    session = require_admin_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT id, stage_code, name, description, probability_percent, sort_order, is_active, created_at, updated_at
+            FROM pipeline_stages
+            WHERE tenant_id = %s
+              AND deleted_at IS NULL
+            ORDER BY sort_order, id
+            """,
+            (session["tenant_id"],),
+        )
+        stages = cursor.fetchall()
+    return {"success": True, "stages": admin_json_rows(stages), "stage_codes": sorted(PIPELINE_STAGE_CODES)}
+
+
+@app.post("/api/admin/pipeline-stages")
+async def admin_create_pipeline_stage(payload: AdminPipelineStagePayload, request: Request):
+    session = require_admin_session(request)
+    if payload.stage_code not in PIPELINE_STAGE_CODES:
+        raise HTTPException(status_code=400, detail="영업 단계 코드를 확인해 주세요.")
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="단계 이름을 입력해 주세요.")
+    probability = max(0, min(100, payload.probability_percent))
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            INSERT INTO pipeline_stages (
+                tenant_id, stage_code, name, description, probability_percent, sort_order, is_active
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                session["tenant_id"],
+                payload.stage_code,
+                payload.name.strip(),
+                none_if_blank(payload.description),
+                probability,
+                payload.sort_order,
+                1 if payload.is_active else 0,
+            ),
+        )
+        stage_id = cursor.lastrowid
+        after = ensure_admin_target_belongs(cursor, "pipeline_stages", stage_id, session["tenant_id"])
+        write_audit_log(cursor, session, "create", "pipeline_stage", stage_id, None, after, request)
+    return {"success": True, "stage": admin_json_row(after)}
+
+
+@app.put("/api/admin/pipeline-stages/{stage_id}")
+async def admin_update_pipeline_stage(stage_id: int, payload: AdminPipelineStagePayload, request: Request):
+    session = require_admin_session(request)
+    if payload.stage_code not in PIPELINE_STAGE_CODES:
+        raise HTTPException(status_code=400, detail="영업 단계 코드를 확인해 주세요.")
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="단계 이름을 입력해 주세요.")
+    probability = max(0, min(100, payload.probability_percent))
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        before = ensure_admin_target_belongs(cursor, "pipeline_stages", stage_id, session["tenant_id"])
+        cursor.execute(
+            """
+            UPDATE pipeline_stages
+            SET stage_code = %s,
+                name = %s,
+                description = %s,
+                probability_percent = %s,
+                sort_order = %s,
+                is_active = %s
+            WHERE id = %s
+              AND tenant_id = %s
+              AND deleted_at IS NULL
+            """,
+            (
+                payload.stage_code,
+                payload.name.strip(),
+                none_if_blank(payload.description),
+                probability,
+                payload.sort_order,
+                1 if payload.is_active else 0,
+                stage_id,
+                session["tenant_id"],
+            ),
+        )
+        after = ensure_admin_target_belongs(cursor, "pipeline_stages", stage_id, session["tenant_id"])
+        write_audit_log(cursor, session, "update", "pipeline_stage", stage_id, before, after, request)
+    return {"success": True, "stage": admin_json_row(after)}
+
+
+@app.delete("/api/admin/pipeline-stages/{stage_id}")
+async def admin_delete_pipeline_stage(stage_id: int, request: Request):
+    session = require_admin_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        before = ensure_admin_target_belongs(cursor, "pipeline_stages", stage_id, session["tenant_id"])
+        cursor.execute(
+            "UPDATE pipeline_stages SET deleted_at = NOW(6) WHERE id = %s AND tenant_id = %s AND deleted_at IS NULL",
+            (stage_id, session["tenant_id"]),
+        )
+        write_audit_log(cursor, session, "delete", "pipeline_stage", stage_id, before, None, request)
+    return {"success": True}
+
+
+@app.get("/api/admin/logs")
+async def admin_logs(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    session = require_admin_session(request)
+    with db_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                l.id, l.actor_user_id, u.name AS actor_name, u.email AS actor_email,
+                l.action, l.entity_type, l.entity_id, l.ip_address, l.user_agent,
+                l.before_json, l.after_json, l.created_at
+            FROM audit_logs l
+            LEFT JOIN users u
+                   ON u.id = l.actor_user_id
+                  AND u.tenant_id = l.tenant_id
+            WHERE l.tenant_id = %s
+            ORDER BY l.created_at DESC, l.id DESC
+            LIMIT %s
+            """,
+            (session["tenant_id"], limit),
+        )
+        logs = cursor.fetchall()
+    return {"success": True, "logs": admin_json_rows(logs)}
+
+
 @app.post("/api/extract")
 async def extract_business_card(
     request: Request,
@@ -1835,6 +2421,26 @@ async def index(request: Request):
     )
 
 
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request):
+    session = get_session(request)
+    if not session:
+        return RedirectResponse("/login.html", status_code=303)
+    if session.get("role") not in ADMIN_ROLES:
+        return RedirectResponse("/", status_code=303)
+    html = (BASE_DIR / "admin.html").read_text(encoding="utf-8")
+    admin_script_version = int((BASE_DIR / "admin.js").stat().st_mtime)
+    session_script = (
+        "<script>"
+        f"window.__FSAI_SESSION__ = {json.dumps({**session, 'role_label': role_label(session['role'])}, ensure_ascii=False)};"
+        "</script>"
+    )
+    return html.replace(
+        '<script src="/admin.js"></script>',
+        f"{session_script}\n    <script src=\"/admin.js?v={admin_script_version}\"></script>",
+    )
+
+
 @app.get("/login.html", response_class=HTMLResponse)
 async def login_page(request: Request):
     if get_session(request):
@@ -1847,7 +2453,9 @@ async def asset(asset_name: str):
     allowed_assets = {
         "styles.css",
         "script.js",
+        "admin.js",
         "login.html",
+        "admin.html",
         "fingersales_logo.png",
         "fingerai_logo.png",
     }
@@ -1858,7 +2466,7 @@ async def asset(asset_name: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Not found")
     response = FileResponse(path)
-    if asset_name in {"script.js", "styles.css"}:
+    if asset_name in {"script.js", "admin.js", "styles.css"}:
         response.headers["Cache-Control"] = "no-cache"
     return response
 
