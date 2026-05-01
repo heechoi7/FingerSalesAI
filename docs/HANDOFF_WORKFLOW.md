@@ -45,6 +45,32 @@
 - `.venv`, `.uv-cache`, `.uv-python`, `__pycache__`는 공유 대상이 아닙니다.
 - `uv.lock`은 공유 대상입니다.
 
+현재 로컬 Git 준비 상태:
+
+- Windows 프로젝트 폴더는 Git 저장소로 초기화되어 있습니다.
+- 기본 브랜치는 `main`입니다.
+- `.gitignore`가 추가되어 `.env`, 가상환경, uv 캐시, 로그, Python 캐시, DB dump 파일을 제외합니다.
+- 첫 로컬 커밋 메시지는 `chore: initialize FingerSalesAI project`입니다.
+- 원격 private 저장소 URL은 아직 연결 전입니다.
+
+원격 저장소 연결 순서:
+
+```powershell
+git remote add origin <private-repo-url>
+git push -u origin main
+```
+
+MacBook에서 이어받기:
+
+```bash
+git clone <private-repo-url>
+cd FingerSalesAI
+cp .env.example .env
+uv run main.py
+```
+
+MacBook에서는 `.env` 값을 직접 채웁니다. Windows의 `.env` 파일을 Git으로 공유하지 않습니다.
+
 ### 3.2 장비별 준비
 
 공통 설치 필요:

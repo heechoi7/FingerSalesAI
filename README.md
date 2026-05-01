@@ -463,6 +463,37 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 - `docs/HANDOFF_WORKFLOW.md` 생성 및 핵심 섹션 확인
 - README 문서 인덱스와 2026-05-01 변경 이력 확인
 
+### 2026-05-01: private Git 저장소 준비
+
+변경 파일:
+- `.gitignore`
+- `database.py`
+- `.env.example`
+- `docs/HANDOFF_WORKFLOW.md`
+- `README.md`
+
+작업 내용:
+- Windows 환경에 Git을 설치했습니다.
+- 프로젝트 폴더를 로컬 Git 저장소로 초기화했습니다.
+- 기본 브랜치를 `main`으로 만들었습니다.
+- `.env`, `.venv`, `.uv-cache`, `.uv-python`, `__pycache__`, 로그 파일, DB dump 파일이 Git에 올라가지 않도록 `.gitignore`를 추가했습니다.
+- `.env.example`에서 실제 DB 비밀번호 값을 제거하고 예시 값으로 변경했습니다.
+- `database.py`의 DB 비밀번호 기본값에서 실제 비밀번호를 제거했습니다.
+- 커밋 작성자 정보는 개인 이메일 노출을 피하기 위해 로컬 저장소에 `FingerSalesAI Codex <codex@example.local>`로 설정했습니다.
+- 첫 로컬 커밋을 생성했습니다.
+- 원격 private 저장소 연결 절차를 `docs/HANDOFF_WORKFLOW.md`에 기록했습니다.
+
+검증:
+- `git status --ignored --short`로 민감/로컬 파일 제외 확인
+- `git check-ignore`로 `.env`, 가상환경, 캐시, 로그 제외 확인
+- 커밋 대상 파일에서 실제 API 키/DB 비밀번호가 추적되지 않는지 확인
+- 첫 커밋 생성 완료
+
+남은 작업:
+- GitHub/GitLab/Bitbucket 등 private 원격 저장소 URL 확정
+- `git remote add origin <private-repo-url>`
+- `git push -u origin main`
+
 ### 2026-04-30: 상단 사용자 표시 중복 제거
 
 변경 파일:
