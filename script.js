@@ -335,9 +335,9 @@ function renderCustomerView() {
   canvasArea.innerHTML = `
     <div class="module-view">
       <form class="module-filter" id="customer-filter-form">
-        <label>회사명<input name="company_name" placeholder="회사명" /></label>
-        <label>고객명<input name="contact_name" placeholder="고객명" /></label>
-        <button type="submit">조회</button>
+        ${filterInput("company_name", "회사명")}
+        ${filterInput("contact_name", "고객명")}
+        ${searchIconButton()}
       </form>
       <div class="customer-table-wrap" aria-label="고객 정보 그리드">
         <table class="customer-table">
@@ -426,6 +426,21 @@ function documentLinkValue(row) {
   };
 }
 
+function searchIconButton(label = "조회") {
+  return `
+    <button class="module-search-button" type="submit" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.5-3.5"></path>
+      </svg>
+    </button>
+  `;
+}
+
+function filterInput(name, placeholder) {
+  return `<input name="${escapeHtml(name)}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(placeholder)}" />`;
+}
+
 function renderDataTable({ rows, columns, emptyMessage, onSelect }) {
   const bodyRows = rows.length
     ? rows
@@ -481,10 +496,10 @@ function renderPipelineView(rows = []) {
   canvasArea.innerHTML = `
     <div class="module-view">
       <form class="module-filter" id="pipeline-filter-form">
-        <label>영업기회명<input name="name" placeholder="영업기회명" /></label>
-        <label>영업기회 상태<input name="status" placeholder="open, won, lost" /></label>
-        <label>회사명<input name="company_name" placeholder="회사명" /></label>
-        <button type="submit">조회</button>
+        ${filterInput("name", "영업기회명")}
+        ${filterInput("status", "영업기회 상태")}
+        ${filterInput("company_name", "회사명")}
+        ${searchIconButton()}
       </form>
       ${renderDataTable({ rows, columns, emptyMessage: "조회된 영업기회가 없습니다." })}
     </div>
@@ -530,9 +545,9 @@ function renderQuoteView(rows = []) {
   canvasArea.innerHTML = `
     <div class="module-view">
       <form class="module-filter" id="quote-filter-form">
-        <label>회사명<input name="company_name" placeholder="회사명" /></label>
-        <label>고객명<input name="contact_name" placeholder="고객명" /></label>
-        <button type="submit">조회</button>
+        ${filterInput("company_name", "회사명")}
+        ${filterInput("contact_name", "고객명")}
+        ${searchIconButton()}
       </form>
       ${renderDataTable({ rows, columns, emptyMessage: "조회된 견적이 없습니다." })}
     </div>
@@ -577,9 +592,9 @@ function renderContractView(rows = []) {
   canvasArea.innerHTML = `
     <div class="module-view">
       <form class="module-filter" id="contract-filter-form">
-        <label>회사명<input name="company_name" placeholder="회사명" /></label>
-        <label>고객명<input name="contact_name" placeholder="고객명" /></label>
-        <button type="submit">조회</button>
+        ${filterInput("company_name", "회사명")}
+        ${filterInput("contact_name", "고객명")}
+        ${searchIconButton()}
       </form>
       ${renderDataTable({ rows, columns, emptyMessage: "조회된 계약이 없습니다." })}
     </div>

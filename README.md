@@ -423,6 +423,23 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 그리드 필터 입력 UI 간소화
+
+변경 파일:
+- `script.js`
+- `styles.css`
+- `README.md`
+
+작업 내용:
+- 고객, 파이프라인, 견적, 계약 필터의 입력 박스 위 라벨 텍스트를 제거했습니다.
+- 입력 의미는 placeholder와 `aria-label`로 유지했습니다.
+- 조회 버튼을 텍스트 버튼에서 돋보기 아이콘 버튼으로 변경했습니다.
+- 조회 아이콘 버튼은 필터 영역 우측 끝에 정렬되도록 고정했습니다.
+
+검증:
+- `node --check script.js`
+- `git diff --check`
+
 ### 2026-05-01: 메뉴 진입 시 첫 데이터 자동 선택과 상세 항목 정리
 
 변경 파일:

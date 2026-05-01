@@ -584,12 +584,11 @@ h3 {
 
 .module-filter {
   display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(120px, 1fr)) minmax(34px, auto);
   gap: 8px;
-  align-items: end;
+  align-items: center;
 }
 
-.module-filter label,
 .calendar-picker {
   color: var(--muted);
   font-size: 11px;
@@ -601,7 +600,7 @@ h3 {
 .calendar-picker select {
   width: 100%;
   min-height: 34px;
-  margin-top: 5px;
+  margin-top: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
@@ -610,7 +609,6 @@ h3 {
   font: inherit;
 }
 
-.module-filter button,
 .calendar-toolbar button,
 .calendar-picker button {
   min-height: 34px;
@@ -623,11 +621,42 @@ h3 {
   cursor: pointer;
 }
 
-.module-filter button:hover,
 .calendar-toolbar button:hover,
 .calendar-picker button:hover {
   border-color: rgba(215, 53, 53, 0.45);
   color: var(--brand-dark);
+}
+
+.module-search-button {
+  grid-column: 4;
+  justify-self: end;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--charcoal);
+  padding: 0;
+}
+
+.module-search-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.module-search-button:hover,
+.module-search-button:focus-visible {
+  border-color: rgba(215, 53, 53, 0.45);
+  color: var(--brand-dark);
+  outline: none;
 }
 
 .grid-board {
