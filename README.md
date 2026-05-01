@@ -423,6 +423,25 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: 좌측 패널 상하 분리와 65:35 스플리터 적용
+
+변경 파일:
+- `index.html`
+- `styles.css`
+- `script.js`
+- `README.md`
+
+작업 내용:
+- 좌측 영역을 우측 패널 구성과 같은 방식의 독립 패널 2개로 분리했습니다.
+- 상단은 고객 리스트 패널, 하단은 고객 상세 정보 패널로 구성했습니다.
+- 두 패널 사이에 상하 스플리터를 추가하고 기본 비율을 65:35로 지정했습니다.
+- 스플리터는 마우스 드래그와 키보드 위/아래 방향키 조절을 지원합니다.
+- 상세 정보 패널 헤더와 본문을 분리해 다른 패널과 같은 타이틀 구분 구조로 맞췄습니다.
+
+검증:
+- `node --check script.js`
+- `.venv\Scripts\python.exe -c "import main; print('app import ok')"`
+
 ### 2026-05-01: favicon 요청 404 로그 제거
 
 변경 파일:

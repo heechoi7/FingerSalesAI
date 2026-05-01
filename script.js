@@ -52,8 +52,10 @@ function startResize(event, side) {
     side,
     rect,
     left: parseFloat(styles.getPropertyValue("--left-size")) || 50,
+    top: parseFloat(styles.getPropertyValue("--left-top-size")) || 65,
     right: parseFloat(styles.getPropertyValue("--right-size")) || 20,
     pointerX,
+    pointerY: event.clientY ?? event.touches?.[0]?.clientY,
   };
 
   event.currentTarget.classList.add("active");
@@ -64,10 +66,16 @@ function resizePanels(event) {
   if (!dragState) return;
 
   const pointerX = event.clientX ?? event.touches?.[0]?.clientX;
+  const pointerY = event.clientY ?? event.touches?.[0]?.clientY;
   const deltaPercent = ((pointerX - dragState.pointerX) / dragState.rect.width) * 100;
+  const deltaYPercent = ((pointerY - dragState.pointerY) / dragState.rect.height) * 100;
 
   if (dragState.side === "left") {
     document.documentElement.style.setProperty("--left-size", `${clamp(dragState.left + deltaPercent, 30, 60)}%`);
+  }
+
+  if (dragState.side === "left-vertical") {
+    document.documentElement.style.setProperty("--left-top-size", `${clamp(dragState.top + deltaYPercent, 45, 78)}%`);
   }
 
   if (dragState.side === "right") {
@@ -93,6 +101,11 @@ function nudgePanel(side, direction) {
     document.documentElement.style.setProperty("--left-size", `${clamp(left + direction * 2, 30, 60)}%`);
   }
 
+  if (side === "left-vertical") {
+    const top = parseFloat(styles.getPropertyValue("--left-top-size")) || 65;
+    document.documentElement.style.setProperty("--left-top-size", `${clamp(top + direction * 2, 45, 78)}%`);
+  }
+
   if (side === "right") {
     document.documentElement.style.setProperty("--right-size", `${clamp(right - direction * 2, 16, 36)}%`);
   }
@@ -101,6 +114,11 @@ function nudgePanel(side, direction) {
 document.querySelector(".splitter-left")?.addEventListener("pointerdown", (event) => {
   event.currentTarget.setPointerCapture(event.pointerId);
   startResize(event, "left");
+});
+
+document.querySelector(".splitter-left-vertical")?.addEventListener("pointerdown", (event) => {
+  event.currentTarget.setPointerCapture(event.pointerId);
+  startResize(event, "left-vertical");
 });
 
 document.querySelector(".splitter-right")?.addEventListener("pointerdown", (event) => {
@@ -112,6 +130,12 @@ document.querySelector(".splitter-left")?.addEventListener("keydown", (event) =>
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   event.preventDefault();
   nudgePanel("left", event.key === "ArrowRight" ? 1 : -1);
+});
+
+document.querySelector(".splitter-left-vertical")?.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+  event.preventDefault();
+  nudgePanel("left-vertical", event.key === "ArrowDown" ? 1 : -1);
 });
 
 document.querySelector(".splitter-right")?.addEventListener("keydown", (event) => {
