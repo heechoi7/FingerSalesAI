@@ -423,6 +423,21 @@ uv run python -c "from database import init_db; init_db(); print('db ok')"
 
 ## 변경 이력
 
+### 2026-05-01: Home 대시보드 날짜 표시 정리
+
+변경 파일:
+- `script.js`
+- `styles.css`
+- `README.md`
+
+변경 내용:
+- Home 상단 오른쪽 요약 박스를 제거하고 오늘 날짜만 간단히 표시하도록 변경했습니다.
+- 일일 브리핑 섹션의 상태 문구를 제거하고 브리핑 작성 날짜와 시간을 보여주도록 변경했습니다.
+
+검증:
+- `node --check script.js`
+- `git diff --check`
+
 ### 2026-05-01: Home 대시보드 시각화 개선
 
 변경 파일:

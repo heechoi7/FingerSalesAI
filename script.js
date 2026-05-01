@@ -473,6 +473,11 @@ function homeProgressPercent(metric) {
   return Math.min(100, Math.round((month / year) * 100));
 }
 
+function formatBriefingWrittenAt(value) {
+  if (!value) return "작성 일시 미확인";
+  return `작성 ${formatDateTime(value)}`;
+}
+
 function setHomeMode(enabled) {
   leftPanel?.classList.toggle("home-mode", enabled);
   canvasArea?.classList.toggle("home-canvas", enabled);
@@ -484,7 +489,6 @@ function renderHomeView(data) {
   if (!canvasArea) return;
   const metrics = data?.metrics || [];
   const briefing = String(data?.briefing?.summary_text || "오늘 브리핑을 생성할 데이터가 아직 없습니다.");
-  const yearTotal = metrics.reduce((sum, metric) => sum + Number(metric.counts?.year || 0), 0);
   canvasArea.innerHTML = `
     <div class="home-view">
       <section class="home-section home-metrics-section" aria-label="홈 대시보드 수치">
@@ -493,11 +497,7 @@ function renderHomeView(data) {
             <h2>오늘의 영업 현황</h2>
             <p>핵심 업무 흐름을 일, 월, 년 단위로 압축해서 보여줍니다.</p>
           </div>
-          <div class="home-dashboard-total">
-            <span>${escapeHtml(data?.date || "")}</span>
-            <strong>${escapeHtml(formatPlainNumber(yearTotal))}</strong>
-            <em>올해 누적 건수</em>
-          </div>
+          <time class="home-dashboard-date" datetime="${escapeHtml(data?.date || "")}">${escapeHtml(data?.date || "")}</time>
         </div>
         <div class="home-metric-grid">
           ${metrics
@@ -539,7 +539,7 @@ function renderHomeView(data) {
       <section class="home-section home-briefing-section" aria-label="일일 브리핑">
         <div class="home-section-title">
           <h2>일일 브리핑</h2>
-          <span>${data?.briefing?.generated ? "오늘 새로 생성" : "오늘 저장본"}</span>
+          <span>${escapeHtml(formatBriefingWrittenAt(data?.briefing?.created_at || data?.briefing?.updated_at))}</span>
         </div>
         <div class="home-briefing-text">
           ${briefing
